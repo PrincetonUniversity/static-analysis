@@ -45,7 +45,8 @@ end
 
 
 "run makes a plot of personal information and social influence for groups of particles."
-function run(file::AbstractString, α::Real = -0.5)
+function run(file::AbstractString, α::Real = -0.2)
+	# α-shape radius = 25cm = 5 body width => α = -0.2
 
 	p = h5read_particles(file)
 	pi = h5read(file, "personal")
@@ -181,12 +182,12 @@ end
 
 function runscale(mode)
 	println("> scale/data_0.5_$(mode).h5")
-	_, _, dfb, dfe = run("scale/data_0.5_$(mode).h5")
+	_, _, dfb, dfe = run("scale/data_0.5_$(mode).h5", -0.2 / 0.5)
 	dfb[:Scale] = 0.5
 	dfe[:Scale] = 0.5
 	for scale in logspace(-log10(2), log10(2), 9)[2:end]
 		println("> scale/data_$(scale)_$(mode).h5")
-		_, _, dfb2, dfe2 = run("scale/data_$(scale)_$(mode).h5", -0.5 / scale)
+		_, _, dfb2, dfe2 = run("scale/data_$(scale)_$(mode).h5", -0.2 / scale)
 		dfb2[:Scale] = scale
 		dfe2[:Scale] = scale
 		append!(dfb, dfb2)
@@ -204,7 +205,7 @@ function runsize(mode)
 	dfe[:Size] = 5.0
 	for size in 10.0:5.0:25.0
 		println("> size/data_$(size)_$(mode).h5")
-		_, _, dfb2, dfe2 = run("size/data_$(size)_$(mode).h5", -0.5)
+		_, _, dfb2, dfe2 = run("size/data_$(size)_$(mode).h5", -0.2)
 		dfb2[:Size] = size
 		dfe2[:Size] = size
 		append!(dfb, dfb2)
@@ -359,12 +360,12 @@ function dist_from_edge(α::Real, p::Vector{State})
 	outer, inner, degen, solo = alphashape(α, p)
 	@inbounds for i in eachindex(p)
 		if i in solo
-			de[i] = 0
+			de[i] = NaN
 			continue
 		end
 		dmin = Inf
 		m = p[i].pos
-		for kind in (outer, inner, degen), v in kind, j=2:length(v)
+		for kind in (outer, degen), v in kind, j=2:length(v)
 			a, b = p[v[j-1]].pos, p[v[j]].pos
 			u = b - a
 			t = dot(m - a, u) / norm(u)
