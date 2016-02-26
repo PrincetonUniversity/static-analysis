@@ -1,7 +1,26 @@
-# α-shape related functions
+# Compute α-shapes and distances from the edge of the α-shapes.
+
+"An `AlphaShape` contains the different parts of an α-shape."
+type AlphaShape
+    outer::Vector{Vector{Int}}
+    inner::Vector{Vector{Int}}
+    degen::Vector{Vector{Int}}
+    solo::Vector{Int}
+end
+
+
+"`mainshape` returns the largest outer shape as a vector of indices."
+mainshape(shape::AlphaShape) = shape.outer[last(findmax(map(length, shape.outer)))]
+
+"`mainshape` returns the largest outer shape as a vector of positions."
+mainshape(shape::AlphaShape, p::Vector{Vec2}) = Vec2[p[i] for i in mainshape(shape)]
+
 
 "alphashape computes the α-shape of a group of particles."
-function alphashape(α::Real, p::Vector{State})
+alphashape(α::Real, p::Vector{State}) = alphashape(α, [q.pos for q in p])
+
+"alphashape computes the α-shape of a group of points."
+function alphashape(α::Real, p::Vector{Vec2})
     n = length(p)
     r = abs(1/α)
     if α < 0
@@ -17,7 +36,7 @@ function alphashape(α::Real, p::Vector{State})
     degen = Vector{Int}[]
     dist = zeros(n, n)
     @inbounds for i=1:n, j=i+1:n
-        u = p[j].pos - p[i].pos
+        u = p[j] - p[i]
         d = norm(u)
         dist[i,j] = d
 
@@ -26,7 +45,7 @@ function alphashape(α::Real, p::Vector{State})
 
         # find center of circles
         h = sqrt(r^2 - (d/2)^2)
-        vh = p[i].pos + u/2
+        vh = p[i] + u/2
         v = Vec2(-u.y, u.x) / d
         v0 = vh + h * v
         v1 = vh - h * v
@@ -35,8 +54,8 @@ function alphashape(α::Real, p::Vector{State})
         c0, c1 = true, true
         for k=1:n
             i != k != j || continue
-            c0 &= incircle(p[k].pos, v0, v)
-            c1 &= incircle(p[k].pos, v1, v)
+            c0 &= incircle(p[k], v0, v)
+            c1 &= incircle(p[k], v1, v)
             c1 || c0 || break
         end
         c1 && c0 && push!(degen, [i, j])
@@ -69,16 +88,16 @@ function alphashape(α::Real, p::Vector{State})
 
     # distinguish inner and outer α-shapes
     m = length(outer)
-    m > 0 || return outer, outer, degen, solo
+    m > 0 || return AlphaShape(outer, outer, degen, solo)
     q = falses(m, m)
     @inbounds for i=1:m, j=1:m
         i != j || continue
-        q[i,j] = inpolygon(p[outer[i][1]].pos, [v.pos for v in p[outer[j]]])
+        q[i,j] = inpolygon(p[outer[i][1]], p[outer[j]])
     end
     out = map(iseven, squeeze(sum(q, 2), 2))
     inner = outer[!out]
     outer = outer[out]
-    outer, inner, degen, solo
+    AlphaShape(outer, inner, degen, solo)
 end
 
 "inpolygon tests wether a point is in a polygon."
@@ -101,14 +120,131 @@ function inpolygon(p::Vec2, poly::Vector{Vec2})
     wn != 0
 end
 
-"makevidalpha save a time sequence of α-shape plots"
-function makevidalpha(α::Real, p::Matrix{State})
-    K = size(x,2)
+
+# Distance from edge
+# ------------------
+
+"dist_from_edge computes the distance of each particle to the edge of the α-shape."
+function dist_from_edge(α::Real, p::Vector{State})
+    de = similar(p, Float64)
+    shape = alphashape(α, p)
+    @inbounds for i in eachindex(p)
+        if i in shape.solo
+            de[i] = NaN
+            continue
+        end
+        dmin = Inf
+        m = p[i].pos
+        for kind in (shape.outer, shape.degen), v in kind, j=2:length(v)
+            a, b = p[v[j-1]].pos, p[v[j]].pos
+            u = b - a
+            t = dot(m - a, u) / norm(u)
+            d = norm(a + clamp(t, 0, 1) * u - m)
+            dmin = min(dmin, d)
+        end
+        de[i] = dmin
+    end
+    de
+end
+
+function dist_from_edge(α::Real, p::Vector{State}, grid::Matrix{Vec2})
+    d = Vector{Float64}(length(grid))
+    shape = alphashape(α, p)
+    @inbounds for i in eachindex(grid)
+        dmin = Inf
+        m = grid[i]
+        for kind in (shape.outer, shape.degen), v in kind, j=2:length(v)
+            a, b = p[v[j-1]].pos, p[v[j]].pos
+            u = b - a
+            t = dot(m - a, u) / norm(u)
+            d0 = norm(a + clamp(t, 0, 1) * u - m)
+            dmin = min(dmin, d0)
+        end
+        d[i] = dmin
+        if any([inpolygon(m, Vec2[x.pos for x in p[v]]) for v in outer])
+            d[i] = -dmin
+        end
+    end
+    return d
+end
+
+function dist_from_edge(file::AbstractString; α::Real = -0.2)
+    p, mask = h5read_particles(file)
+
+    N = size(p, 1) # max swarm size
+    K = size(p, 2) # replicates
+
+    de = zeros(N, K)
     for k=1:K
         @printf("\r%3d%%", 100(k-1) / K)
-        n = countnz([v.pos.x for v in p[:,k]])
-        outer, inner, degen, solo = alphashape(α, p[1:n,k])
-        h = plotalpha(outer, inner, degen, solo, p[1:n,k])
+        nz = mask[:,k]
+        de[nz,k] = dist_from_edge(α, p[nz,k])
+    end
+    println("\r100%")
+    de
+end
+
+function dist_from_edge_grid(file::AbstractString; α::Real = -0.2)
+    p, mask = h5read_particles(file)
+
+    K = size(p, 2) # replicates
+    nx, ny = size(detections, 1, 2)
+
+    grid = [Vec2(x,y) for x in linspace(-50, 50, nx), y in linspace(-50, 50, ny)]
+
+    de = zeros(nx * ny, K)
+    for k=1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = mask[:,k]
+        de[:,k] = dist_from_edge(α, p[nz,k], grid)
+    end
+    println("\r100%")
+    de
+end
+
+
+# Plotting
+# --------
+
+"`plotalpha` plots the precomputed α-shape of a group of particles."
+function plotalpha(shape::AlphaShape, p::Vector{State})
+    layers = Layer[]
+    for u in shape.outer
+        v = [u; u[1]]
+        x = [q.pos.x for q in p[v]]
+        y = [q.pos.y for q in p[v]]
+        append!(layers, layer(x=x, y=y, Geom.point, Geom.path, Theme(default_color=colorant"red")))
+    end
+    for u in shape.inner
+        v = [u; u[1]]
+        x = [q.pos.x for q in p[v]]
+        y = [q.pos.y for q in p[v]]
+        append!(layers, layer(x=x, y=y, Geom.point, Geom.path, Theme(default_color=colorant"orange")))
+    end
+    for u in shape.degen
+        v = [u; u[1]]
+        x = [q.pos.x for q in p[v]]
+        y = [q.pos.y for q in p[v]]
+        append!(layers, layer(x=x, y=y, Geom.point, Geom.path, Theme(default_color=colorant"gray")))
+    end
+    x = [q.pos.x for q in p[shape.solo]]
+    y = [q.pos.y for q in p[shape.solo]]
+    append!(layers, layer(x=x, y=y, Geom.point, Theme(default_color=colorant"pink")))
+    x = [q.pos.x for q in p]
+    y = [q.pos.y for q in p]
+    append!(layers, layer(x=x, y=y, Geom.point))
+    plot(layers..., Coord.cartesian(fixed=true))
+end
+
+
+"`makevidalpha` saves a time sequence of α-shape plots."
+function makevidalpha(α::Real, p::Matrix{State}, mask::BitMatrix)
+    K = size(p, 2)
+    for k=1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = find(mask[:,k])
+        shape = alphashape(α, p[nz,k])
+        h = plotalpha(shape, p[nz,k])
         draw(PNG(@sprintf("vid/%05d.png", k), 6inch, 6inch), h)
     end
     println("\r100%")

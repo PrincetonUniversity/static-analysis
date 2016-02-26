@@ -1,7 +1,5 @@
 # Structure
 
-using LightGraphs
-
 function graph(adj::BitMatrix)
     n = size(adj, 1)
     g = DiGraph(n)
@@ -16,13 +14,6 @@ end
 function run_structure(file::AbstractString)
     p, mask = h5read_particles(file)
     si = h5read(file, "social")
-
-    # For each polarized swarm
-    #   While there are links
-    #     Remove weakest link
-    #     For each remaining subgraph
-    #       Compute principal components
-    #       Save component size, weakest link value, aspect ratio, angle between 1st PC and swarm polarization in DataFrame
 
     N = size(p, 1) # max swarm size
     K = size(p, 2) # replicates
@@ -87,13 +78,12 @@ end
 
 
 
-using Gadfly
-
 function plot_structure(df::AbstractDataFrame)
-    idx = df[:ComponentAspectRatio] .< 1/√2
+    # idx = df[:ComponentAspectRatio] .< 1/√2
+    idx = df[:ComponentAspectRatio] .<= 0.8
 
     dfab = by(df[idx,:], :WeakestLink) do d
-        e = linspace(0, 160, 16*4)
+        e = linspace(0, 300, 16*4)
         _, bin = hist(d[:ComponentSize], e)
         DataFrame(ComponentSize=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
     end
@@ -146,4 +136,71 @@ function plot_structure(df::AbstractDataFrame)
     draw(PDF("neighbor_angle.pdf", 6inch, 4inch), c)
 
     nothing
+end
+
+
+"""
+`path_weights` computes the weights of all the edges of a graph
+and the multiplicative weigths of all paths of length 2.
+"""
+function path_weights(file::AbstractString)
+    p, mask = h5read_particles(file)
+    si = h5read(file, "social")
+
+    N = size(p, 1) # max swarm size
+    K = size(p, 2) # replicates
+
+    edges = 0:0.025:1
+    bins = (edges[1:end-1] + edges[2:end]) / 2
+    n = length(bins)
+
+    println("Building DataFrame…")
+    df = DataFrame(
+        PathLength=repeat([1,2], inner=[n]),
+        Weight=repeat(collect(bins), outer=[2]),
+        BinCount=zeros(Int, 2n))
+    @inbounds for k=1:K
+        # @printf("\r%3d%%", 100(k-1) / K)
+        @printf("\r%d", k)
+        nz = find(mask[:,k])
+        lz = length(nz)
+
+        # skip non-polarized swarm
+        op, or = order_parameters(p[nz,k])
+        op > 0.65 && or < 0.35 || continue
+
+        net = si[nz,nz,k]
+
+        for j in 1:lz, i in 1:lz
+            i != j || continue
+
+            for l in 1:n
+                if net[i,j] < edges[l+1]
+                    df[l, :BinCount] += 1
+                    break
+                end
+            end
+
+            for m in 1:lz
+                j != m || continue
+                for l in 1:n
+                    if net[i,j] * net[j,m] < edges[l+1]
+                        df[n+l, :BinCount] += 1
+                        break
+                    end
+                end
+            end
+
+        end
+    end
+    println("\r100%")
+
+    return df
+end
+
+function plot_path_weights(df::AbstractDataFrame)
+    p = plot(df, x=:Weight, y=:BinCount, color=:PathLength,
+        Geom.bar(position=:dodge),
+        Scale.y_log10, Scale.color_discrete)
+    draw(PDF("path_weights.pdf", 6inch, 4inch), p)
 end

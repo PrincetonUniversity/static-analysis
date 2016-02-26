@@ -1,6 +1,8 @@
-# module StaticAnalysis
+# StaticAnalysis
+# ==============
 
-# export Vec2, State, norm, unit, dot, cross, mean
+# Utils
+# -----
 
 "Vec2 is a 2D vector."
 immutable Vec2
@@ -8,7 +10,7 @@ immutable Vec2
     y::Float64
 end
 
-"A State contains the position and orientation of a particle."
+"A State contains the position and velocity of a particle."
 immutable State
     pos::Vec2
     vel::Vec2
@@ -21,10 +23,12 @@ for op in [:+, :-, :*, :/]
     @eval $op(u::Vec2, x::Real) = Vec2($op(u.x, x), $op(u.y, x))
 end
 
-import Base: norm, angle, dot
+import Base: norm, angle, dot, cross
 norm(u::Vec2) = hypot(u.x, u.y)
+dist(u::Vec2, v::Vec2) = norm(u - v)
 unit(u::Vec2) = u / norm(u)
 angle(u::Vec2) = atan2(u.y, u.x)
+angle(u::Vec2, v::Vec2) = mod(angle(u) - angle(v) + 3π, 2π) - π
 dot(u::Vec2, v::Vec2) = u.x * v.x + u.y * v.y
 cross(u::Vec2, v::Vec2) = u.x * v.y - u.y * v.x
 
@@ -41,12 +45,52 @@ function mean(p::Vector{State})
     State(Vec2(mx / n, my / n), Vec2(vx / n, vy / n))
 end
 
-include("run.jl")
-include("alpha.jl")
-include("plot.jl")
+
+# Packages
+# --------
+
+# Data
+using DataFrames
+
+# Graphics
+using Gadfly
+using Compose
+using Colors
+
+# I/O
+using HDF5
+using MAT
+
+# Graphs
+using LightGraphs
+
+
+# Projects
+# --------
+#
+# Each file contains functions to generate or load data,
+# compute derived data (typically a DataFrame), and generate plots.
+
+# Consolidate and reformat datasets for ellipswarm.
 include("io.jl")
+
+# Compute α-shapes and distances from the edge of the α-shapes.
+include("alpha.jl")
+
+# Compute personal and social information from ellipswarm/static.
+include("info.jl")
+
+# Analyze detection count in and around the schools.
+include("detections.jl")
+
+# Strip detections based on visual zones (binocular, blind…)
+include("zones.jl")
+
+# Analyse structure of visual interaction networks.
 include("structure.jl")
 
-# end
+# Analyse correlation of information in detections.
+include("spread.jl")
+
 
 nothing

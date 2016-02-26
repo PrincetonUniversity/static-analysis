@@ -1,7 +1,4 @@
-# IO related functions
-
-using HDF5
-using MAT
+# Consolidate and reformat datasets for ellipswarm.
 
 "state_dtype return the HDF5 compound datatype for a State (must be closed)."
 function state_dtype()
@@ -118,5 +115,45 @@ function makeFullDatasets()
     end
     println("\r100%")
     h5write_particles("data/fulldata.h5", p)
+end
+
+function makeRandomDatasets(file::AbstractString; α::Real = -0.2)
+    p, mask = h5read_particles(file)
+
+    N = size(p, 1) # max swarm size
+    K = size(p, 2) # replicates
+
+    @inbounds for k in 1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = find(mask[:,k])
+
+        # try to conserve polarization
+        m = mean(p[nz,k])
+        θ = angle(m.vel)
+        r = norm(m.vel)
+        #σ = acos(min(r, 1))
+        σ = pi/2 * acos(min(sqrt(r), 1))
+        xmin, xmax, ymin, ymax = bounds(p[nz,k])
+        dx, dy = xmax - xmin, ymax - ymin
+
+        # restict position to inside of largest α-shape
+        outer, _, _, _ = alphashape(α, p[nz,k])
+        poly = Vec2[p[nz[i],k].pos for i in outer[last(findmax(map(length, outer)))]]
+        for n in nz
+            while true
+                pos = Vec2(xmin + dx * rand(), ymin + dy * rand())
+                if inpolygon(pos, poly)
+                    ϕ = θ + σ * randn()
+                    vel = Vec2(cos(ϕ), sin(ϕ))
+                    p[n,k] = State(pos, vel)
+                    break
+                end
+            end
+        end
+
+    end
+
+    println("\r100%")
+    h5write_particles("/Users/sleblanc/data/static-analysis/data/fulldata_random.h5", p)
 end
 
