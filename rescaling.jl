@@ -1,4 +1,4 @@
-#
+# Analyse effect of changing interindividual distances.
 
 function runscale()
     lab = ["1÷2", "1÷√2", "1", "√2", "2"]

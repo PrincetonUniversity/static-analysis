@@ -1,6 +1,15 @@
 # StaticAnalysis
 # ==============
 
+
+# Settings
+# --------
+
+data_path = joinpath(homedir(), "data", "static-analysis")
+plot_path = joinpath(homedir(), "plots", "static-analysis")
+
+α_radius = -0.2
+
 # Utils
 # -----
 
@@ -28,7 +37,7 @@ norm(u::Vec2) = hypot(u.x, u.y)
 dist(u::Vec2, v::Vec2) = norm(u - v)
 unit(u::Vec2) = u / norm(u)
 angle(u::Vec2) = atan2(u.y, u.x)
-angle(u::Vec2, v::Vec2) = mod(angle(u) - angle(v) + 3π, 2π) - π
+angle(u::Vec2, v::Vec2) = mod2pi(angle(u) - angle(v) + 3π) - π
 dot(u::Vec2, v::Vec2) = u.x * v.x + u.y * v.y
 cross(u::Vec2, v::Vec2) = u.x * v.y - u.y * v.x
 
@@ -91,6 +100,9 @@ include("structure.jl")
 
 # Analyse correlation of information in detections.
 include("spread.jl")
+
+# Analyse effect of changing interindividual distances.
+include("rescaling.jl")
 
 
 nothing

@@ -65,7 +65,7 @@ function run_structure(file::AbstractString)
                 # compute relative angle of neighbors
                 for i in scc, j in neighbors(g, i)
                     ϕ = angle(p[nz[j],k].pos - p[nz[i],k].pos) - angle(p[nz[i],k].vel)
-                    row[:NeighborAngle] = mod(ϕ + 3pi, 2pi) - pi
+                    row[:NeighborAngle] = mod2pi(ϕ + 3pi) - pi
                     append!(df, row)
                 end
             end
@@ -79,11 +79,11 @@ end
 
 
 function plot_structure(df::AbstractDataFrame)
-    # idx = df[:ComponentAspectRatio] .< 1/√2
-    idx = df[:ComponentAspectRatio] .<= 0.8
+    idx = df[:ComponentAspectRatio] .< 1/√2
+    # idx = df[:ComponentAspectRatio] .<= 0.8
 
     dfab = by(df[idx,:], :WeakestLink) do d
-        e = linspace(0, 300, 16*4)
+        e = linspace(0, 160, 160/5)
         _, bin = hist(d[:ComponentSize], e)
         DataFrame(ComponentSize=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
     end
@@ -92,13 +92,15 @@ function plot_structure(df::AbstractDataFrame)
     end
     a = plot(
         layer(dfab, x=:WeakestLink, y=:ComponentSize, color=:Density, Geom.rectbin),
-        layer(dfam, x=:WeakestLink, y=:ComponentSize, Geom.line, order=1),
+        layer(dfam, x=:WeakestLink, y=:ComponentSize, Geom.line, order=1, Theme(default_color=colorant"black")),
         Scale.x_log10,
+        Guide.xlabel("Weakest link threshold"),
+        Guide.ylabel("Component size"),
         Coord.cartesian(xmin=-2.5, xmax=-0.5, ymin=0, ymax=160))
 
     dfbb = by(df[idx,:], :WeakestLink) do d
         d[:ComponentAngle] = rad2deg(d[:ComponentAngle])
-        e = linspace(-90, 90, 18*4)
+        e = linspace(-90, 90, 180/5)
         _, bin = hist(d[:ComponentAngle], e)
         DataFrame(ComponentAngle=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
     end
@@ -110,15 +112,17 @@ function plot_structure(df::AbstractDataFrame)
     end
     b = plot(
         layer(dfbb, x=:WeakestLink, y=:ComponentAngle, color=:Density, Geom.rectbin),
-        layer(dfbm, x=:WeakestLink, y=:ComponentAnglePos, Geom.line, order=1),
-        layer(dfbm, x=:WeakestLink, y=:ComponentAngleNeg, Geom.line, order=1),
+        layer(dfbm, x=:WeakestLink, y=:ComponentAnglePos, Geom.line, order=1, Theme(default_color=colorant"black")),
+        layer(dfbm, x=:WeakestLink, y=:ComponentAngleNeg, Geom.line, order=1, Theme(default_color=colorant"black")),
         Scale.x_log10,
         Scale.y_continuous(labels=x->@sprintf("%dº", x)),
+        Guide.xlabel("Weakest link threshold"),
+        Guide.ylabel("Component orientation relative to school"),
         Coord.cartesian(xmin=-2.5, xmax=-0.5, ymin=-90, ymax=90))
 
     dfcb = by(df[idx,:], :WeakestLink) do d
         d[:NeighborAngle] = rad2deg(d[:NeighborAngle])
-        e = linspace(-180, 180, 36*4)
+        e = linspace(-180, 180, 360/10)
         _, bin = hist(d[:NeighborAngle], e)
         DataFrame(NeighborAngle=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
     end
@@ -127,6 +131,8 @@ function plot_structure(df::AbstractDataFrame)
         Scale.x_log10,
         Scale.y_continuous(labels=x->@sprintf("%dº", x)),
         Guide.yticks(ticks=collect(-180:30:180)),
+        Guide.xlabel("Weakest link threshold"),
+        Guide.ylabel("Relative angle of neighbors"),
         Coord.cartesian(xmin=-2.5, xmax=-0.5, ymin=-180, ymax=180))
 
     # return a, b, c

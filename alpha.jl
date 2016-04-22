@@ -24,11 +24,11 @@ function alphashape(α::Real, p::Vector{Vec2})
     n = length(p)
     r = abs(1/α)
     if α < 0
-        incircle(x, xc, vc) = norm(x - xc) ≥ r
+        incircle(x, xc, y, v) = norm(x - xc) ≥ r
     elseif α == 0
-        incircle(x, xc, vc) = dot(x - xc, vc) ≤ 0
+        incircle(x, xc, y, v) = dot(x - y, v) ≥ 0
     else
-        incircle(x, xc, vc) = norm(x - xc) ≤ r
+        incircle(x, xc, y, v) = norm(x - xc) ≤ r
     end
 
     # find list of edges that are part of α-shape
@@ -54,8 +54,8 @@ function alphashape(α::Real, p::Vector{Vec2})
         c0, c1 = true, true
         for k=1:n
             i != k != j || continue
-            c0 &= incircle(p[k], v0, v)
-            c1 &= incircle(p[k], v1, v)
+            c0 &= incircle(p[k], v0, p[i], v)
+            c1 &= incircle(p[k], v1, p[i], 0-v)
             c1 || c0 || break
         end
         c1 && c0 && push!(degen, [i, j])
@@ -92,27 +92,33 @@ function alphashape(α::Real, p::Vector{Vec2})
     q = falses(m, m)
     @inbounds for i=1:m, j=1:m
         i != j || continue
-        q[i,j] = inpolygon(p[outer[i][1]], p[outer[j]])
+        for k in eachindex(outer[i])
+            outer[i][k] in outer[j] && continue
+            q[i,j] = inpolygon(p[outer[i][k]], p[outer[j]])
+            break
+        end
     end
     out = map(iseven, squeeze(sum(q, 2), 2))
     inner = outer[!out]
     outer = outer[out]
+
     AlphaShape(outer, inner, degen, solo)
 end
 
-"inpolygon tests wether a point is in a polygon."
+"inpolygon tests wether a point is in a polygon (or its border)."
 function inpolygon(p::Vec2, poly::Vector{Vec2})
     wn = 0
-    xd(e, p) = (e[2].x - e[1].x) * (p.y - e[1].y) - (p.x - e[1].x) * (e[2].y - e[1].y)
-    push!(poly, poly[1]) # close polygon
+    xd(e1, e2, p) = (e2.x - e1.x) * (p.y - e1.y) - (p.x - e1.x) * (e2.y - e1.y)
     n = length(poly)
-    for i in 1:n-1
+    @inbounds for i in 1:n
+        p == poly[i] && return true # shortcut
+        j = mod1(i + 1, n)
         if poly[i].y <= p.y
-            if poly[i+1].y > p.y && xd(poly[i:i+1], p) > 0
+            if poly[j].y > p.y && xd(poly[i], poly[j], p) >= 0
                 wn += 1
             end
         else
-            if poly[i+1].y <= p.y && xd(poly[i:i+1], p) < 0
+            if poly[j].y <= p.y && xd(poly[i], poly[j], p) <= 0
                 wn -= 1
             end
         end
@@ -126,46 +132,28 @@ end
 
 "dist_from_edge computes the distance of each particle to the edge of the α-shape."
 function dist_from_edge(α::Real, p::Vector{State})
+    mask = falses(length(p))
     de = similar(p, Float64)
+    fill!(de, NaN)
     shape = alphashape(α, p)
+    v = mainshape(shape)
+    vp = Vec2[p[i].pos for i in v]
     @inbounds for i in eachindex(p)
-        if i in shape.solo
-            de[i] = NaN
-            continue
-        end
-        dmin = Inf
         m = p[i].pos
-        for kind in (shape.outer, shape.degen), v in kind, j=2:length(v)
-            a, b = p[v[j-1]].pos, p[v[j]].pos
+        inpolygon(m, vp) || continue
+        mask[i] = true
+        dmin = Inf
+        for j=1:length(v)
+            k = j == 1 ? length(v) : j-1
+            a, b = p[v[k]].pos, p[v[j]].pos
             u = b - a
-            t = dot(m - a, u) / norm(u)
+            t = dot(m - a, u) / norm(u)^2
             d = norm(a + clamp(t, 0, 1) * u - m)
             dmin = min(dmin, d)
         end
         de[i] = dmin
     end
-    de
-end
-
-function dist_from_edge(α::Real, p::Vector{State}, grid::Matrix{Vec2})
-    d = Vector{Float64}(length(grid))
-    shape = alphashape(α, p)
-    @inbounds for i in eachindex(grid)
-        dmin = Inf
-        m = grid[i]
-        for kind in (shape.outer, shape.degen), v in kind, j=2:length(v)
-            a, b = p[v[j-1]].pos, p[v[j]].pos
-            u = b - a
-            t = dot(m - a, u) / norm(u)
-            d0 = norm(a + clamp(t, 0, 1) * u - m)
-            dmin = min(dmin, d0)
-        end
-        d[i] = dmin
-        if any([inpolygon(m, Vec2[x.pos for x in p[v]]) for v in outer])
-            d[i] = -dmin
-        end
-    end
-    return d
+    de, mask
 end
 
 function dist_from_edge(file::AbstractString; α::Real = -0.2)
@@ -175,31 +163,14 @@ function dist_from_edge(file::AbstractString; α::Real = -0.2)
     K = size(p, 2) # replicates
 
     de = zeros(N, K)
+    m = falses(N, K)
     for k=1:K
         @printf("\r%3d%%", 100(k-1) / K)
         nz = mask[:,k]
-        de[nz,k] = dist_from_edge(α, p[nz,k])
+        de[nz,k], m[nz,k] = dist_from_edge(α, p[nz,k])
     end
     println("\r100%")
-    de
-end
-
-function dist_from_edge_grid(file::AbstractString; α::Real = -0.2)
-    p, mask = h5read_particles(file)
-
-    K = size(p, 2) # replicates
-    nx, ny = size(detections, 1, 2)
-
-    grid = [Vec2(x,y) for x in linspace(-50, 50, nx), y in linspace(-50, 50, ny)]
-
-    de = zeros(nx * ny, K)
-    for k=1:K
-        @printf("\r%3d%%", 100(k-1) / K)
-        nz = mask[:,k]
-        de[:,k] = dist_from_edge(α, p[nz,k], grid)
-    end
-    println("\r100%")
-    de
+    de, m
 end
 
 
@@ -240,12 +211,19 @@ end
 "`makevidalpha` saves a time sequence of α-shape plots."
 function makevidalpha(α::Real, p::Matrix{State}, mask::BitMatrix)
     K = size(p, 2)
+    dir = joinpath(plot_path, "vidalpha")
+    try
+        mkdir(dir)
+    catch
+        rm(dir, recursive=true)
+        mkdir(dir)
+    end
     for k=1:K
         @printf("\r%3d%%", 100(k-1) / K)
         nz = find(mask[:,k])
         shape = alphashape(α, p[nz,k])
         h = plotalpha(shape, p[nz,k])
-        draw(PNG(@sprintf("vid/%05d.png", k), 6inch, 6inch), h)
+        draw(PNG(joinpath(dir, @sprintf("%05d.png", k)), 6inch, 6inch), h)
     end
     println("\r100%")
 end

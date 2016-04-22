@@ -15,7 +15,7 @@ of each group, and the number of bins to use for aggregating
 the data.
 """
 function run_info(file::AbstractString; α::Real = -0.2, nbins::Integer = 11)
-    # α-shape radius = 25cm = 5 body width => α = -0.2
+    # α-shape radius = 25cm = 5 body lengths => α = -0.2
 
     p, mask = h5read_particles(file)
     pi = h5read(file, "personal")
@@ -25,15 +25,10 @@ function run_info(file::AbstractString; α::Real = -0.2, nbins::Integer = 11)
     K = size(p, 2) # replicates
 
     # distance from edge
-    dem = zeros(N, K)
-    println("Computing distance from edge…")
-    for k=1:K
-        @printf("\r%3d%%", 100(k-1) / K)
-        nz = mask[:,k]
-        dem[nz,k] = dist_from_edge(α, p[nz,k])
-    end
+    println("Loading distance from edge…")
+    dem = h5read(joinpath(data_path, "dist_from_edge_5.0.h5"), "DistFromEdge")
+    msk = h5read(joinpath(data_path, "dist_from_edge_5.0.h5"), "Mask") .!= 0
     de_max = maximum(dem)
-    println("\r100%")
 
     # distances, order parameters, dataframe
     println("Building DataFrame…")
@@ -57,7 +52,7 @@ function run_info(file::AbstractString; α::Real = -0.2, nbins::Integer = 11)
     df = DataFrame([x[2]::DataType for x in cols], [x[1]::Symbol for x in cols], 0)
     for k=1:K
         @printf("\r%3d%%", 100(k-1) / K)
-        nz = mask[:,k]
+        nz = mask[:,k] & msk[:,k]
 
         # distances
         db = dist_from_back(p[nz,k])
@@ -66,7 +61,7 @@ function run_info(file::AbstractString; α::Real = -0.2, nbins::Integer = 11)
 
         # bins
         db_bin, db_bin_dist = bindist(db, (0, 1), nbins)
-        de_bin, de_bin_dist = bindist(de, (0, de_max), nbins)
+        de_bin, de_bin_dist = bindist(de, (0, 5), nbins)
         de_bin_rel, de_bin_dist_rel = bindist(de_rel, (0, 1), nbins)
 
         # order parameters and state
@@ -82,10 +77,7 @@ function run_info(file::AbstractString; α::Real = -0.2, nbins::Integer = 11)
         end
 
         # social influence
-        # FIXME: should just be cc(si[nz,nz,k])
-        # msi = cc(si[nz,nz,k])
-        w = si[nz,nz,k]
-        msi = cc(w .* (w .> 1e-3)) # 1e-4
+        msi = cc(si[nz,nz,k])
 
         # append to dataframe
         row = DataFrame(
@@ -116,6 +108,21 @@ function run_info(file::AbstractString; α::Real = -0.2, nbins::Integer = 11)
 end
 
 
+function run_order_parameters(file::AbstractString)
+    p, mask = h5read_particles(file)
+    K = size(p, 2) # replicates
+    op = zeros(K)
+    or = zeros(K)
+    for k=1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = mask[:,k]
+        op[k], or[k] = order_parameters(p[nz,k])
+    end
+    println("\r100%")
+    op, or
+end
+
+
 "cc computes the local weighted directed clustering coefficient."
 function cc(w::Matrix{Float64})
     # assuming w is square weight matrix
@@ -137,12 +144,29 @@ function cc(w::Matrix{Float64})
     CC
 end
 
+function denom_cc(w::Matrix{Float64})
+    # assuming w is square weight matrix
+    n = size(w, 1)
+    a = w .!= 0 # adjacency matrix
+    CC = zeros(n)
+    for i=1:n
+        dg, db = 0.0, 0.0
+        for j=1:n
+            j != i || continue
+            dg += a[i,j] + a[j,i]
+            db += a[i,j] * a[j,i]
+        end
+        CC[i] = 2(dg * (dg - 1) - 2db)
+    end
+    CC
+end
+
 "dist_from_back computes the distance of each particle to the back of the swarm."
 function dist_from_back(p::Vector{State})
     m = mean(p)
     db = similar(p, Float64)
     for i in eachindex(p)
-        @inbounds db[i] = dot(p[i].pos - m.pos, Vec2(cos(p[i].dir), sin(p[i].dir)))
+        @inbounds db[i] = dot(p[i].pos - m.pos, p[i].vel)
     end
     min, max = extrema(db)
     (db - min) ./ (max - min)
@@ -180,6 +204,37 @@ function bindist(v::Vector{Float64}, bounds::Tuple{Real, Real}, nbins::Integer)
     return id, val
 end
 
+function gen_dist_alpha(file::AbstractString)
+    for r in [1, 2, 5, 10, 20, Inf]
+        path = joinpath(data_path, string("dist_from_edge_", r, ".h5"))
+        println(path, ":")
+        de, mask = dist_from_edge(file, α=-1/r)
+        try rm(path) end
+        h5write(path, "DistFromEdge", de)
+        h5write(path, "Mask", convert(Matrix{Int8}, mask))
+    end
+end
+
+function plot_max_si(file::AbstractString; threshold=1e-3)
+    p, mask = h5read_particles(file)
+    si = h5read(file, "social")
+
+    N = size(p, 1) # max swarm size
+    K = size(p, 2) # replicates
+
+    dem = h5read(joinpath(data_path, "dist_from_edge_5.0.h5"), "DistFromEdge")
+    msk = h5read(joinpath(data_path, "dist_from_edge_5.0.h5"), "Mask") .!= 0
+
+    for k=1:K
+        nz = mask[:,k] & msk[:,k]
+        msi = cc(si[nz,nz,k])
+        de = dem[nz,k]
+        # h = colorplot(p[nz,k], 0.25(msi .> threshold) + 0.75((msi .> threshold) & (de .> 0.03125/2) & (de .< 0.5)), (-15,15,-15,15))
+        h = colorplot(p[nz,k], 0.25((msi .> 2e-4) & (msi .< 1e-3)) + 0.75((msi .> 2e-4) & (msi .< 1e-3) & (de .> 0.03125/2) & (de .<= 1.5*0.03125)), (-15,15,-15,15))
+        draw(PNG(@sprintf("max_si/%06d.png", k), 900px, 900px), h)
+    end
+end
+
 
 # Plotting
 # --------
@@ -196,11 +251,18 @@ function stdplot(df::AbstractDataFrame)
         m, s = mean(d[:Mean]), std(d[:Mean])
         DataFrame(Dist=d[:Dist], Mean=(d[:Mean]-m)./s, Min=(d[:Min]-m)./s, Max=(d[:Max]-m)./s)
     end
+    dfb[dfb[:,:Kind].==:Personal,:Kind] = Symbol("external visual field")
+    dfb[dfb[:,:Kind].==:Social,:Kind] = Symbol("social influence")
 
     # plot
     p1 = plot(unique(dfb), x=:Dist, y=:Mean, ymin=:Min, ymax=:Max, color=:Kind, Geom.point, Geom.errorbar,
-        Guide.xlabel("Normalized distance from back to front (polarized groups only)"),
-        Guide.ylabel("Standardized units"))
+        Guide.xlabel("Normalized distance from back to front"),
+        Guide.ylabel("Standardized units"),
+        Guide.colorkey(""),
+        Theme(key_position=:top,
+            major_label_font_size=8pt,
+            minor_label_font_size=7pt),
+        Scale.color_discrete_manual("dodgerblue", RGB(0.9, 0, 0)))
 
     # compute mean and SEM
     dfe = by(df[df[:SwarmState].==:Polarized,:], [:Kind, :BinFromEdge]) do d
@@ -209,24 +271,233 @@ function stdplot(df::AbstractDataFrame)
         DataFrame(Dist=d[1,:BinDistFromEdge], Mean=m, Min=m-s, Max=m+s)
     end
 
-
     # standardize units
     dfe = by(dfe, :Kind) do d
         m, s = mean(d[:Mean]), std(d[:Mean])
         DataFrame(Dist=d[:Dist], Mean=(d[:Mean]-m)./s, Min=(d[:Min]-m)./s, Max=(d[:Max]-m)./s)
     end
+    dfe[dfe[:,:Kind].==:Personal,:Kind] = Symbol("external visual field")
+    dfe[dfe[:,:Kind].==:Social,:Kind] = Symbol("social influence")
 
     # plot
     p2 = plot(dfe, x=:Dist, y=:Mean, ymin=:Min, ymax=:Max, color=:Kind, Geom.point, Geom.errorbar,
         # Guide.xlabel("Normalized distance from edge to center"),
         Coord.cartesian(xmin=0, xmax=maximum(dfe[:Dist])+minimum(dfe[:Dist])),
         Guide.xlabel("Distance from edge (body length)"),
-        Guide.ylabel("Standardized units"))
-
-    p = vstack(p1, p2)
+        Guide.ylabel("Standardized units"),
+        Guide.colorkey(""),
+        Theme(key_position=:top,
+            major_label_font_size=8pt,
+            minor_label_font_size=7pt),
+        Scale.color_discrete_manual("dodgerblue", RGB(0.9, 0, 0)))
 
     # draw(PDF("info.pdf", 6inch, 8inch), p)
 
+    return p1, p2
+end
+
+
+function info_illustration_plots(file::AbstractString)
+    p, mask = h5read_particles(file)
+    pi = h5read(file, "personal")
+    si = h5read(file, "social")
+
+    N = size(p, 1) # max swarm size
+    K = size(p, 2) # replicates
+
+    k = 1
+
+    m = mask[:,k]
+
+    xmin, xmax, ymin, ymax = bounds(p[m,k])
+    box = UnitBox(xmin, ymax, xmax - xmin, ymin - ymax)
+
+    c1 = colorplot(p[m,k], pi[m,k], (xmin, xmax, ymin, ymax))
+
+    p1 = plot(x=[100,101], y=[100,101], color=[0.,1], Geom.point,
+        Guide.annotation(c1),
+        Guide.xlabel("x (body length)"),
+        Guide.ylabel("y (body length)"),
+        Guide.colorkey("external\nvisual field"),
+        Scale.color_continuous(minvalue=0, maxvalue=1, colormap=x -> RGB(x, x, 0.5 - x/2)),
+        Coord.cartesian(raster=true, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax, fixed=true))
+
+    w = si[m,m,k]
+    msi = cc(w .* (w .> 1e-3))
+    @show extrema(msi)
+
+    c2 = colorplot(p[m,k], (log10(msi) + 6) / 4, (xmin, xmax, ymin, ymax))
+
+    p2 = plot(x=[100,101], y=[100,101], color=[0.,1], Geom.point,
+        Guide.annotation(c2),
+        Guide.xlabel("x (body length)"),
+        Guide.ylabel("y (body length)"),
+        Guide.colorkey("social\ninfluence"),
+        Scale.color_log10(minvalue=1e-6, maxvalue=1e-2, colormap=x -> RGB(x, x, 0.5 - x/2)),
+        Coord.cartesian(raster=true, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax, fixed=true))
+
+    return p1, p2
+end
+
+
+function plot_personal_info_dist_back(df::AbstractDataFrame)
+    # Limit to personal and outside swarm
+    idx = (df[:Kind].==:Personal) & (df[:DistFromEdge].>=0)
+
+    dp = df[idx,:]
+    dp[:Info] = 360 * dp[:Info]
+    # @show extrema(dp[:,:DistFromBack])
+    dp[:BinDistFromBack] = convert(DataVector{Float64}, zeros(size(dp, 1)))
+    ex = 0:0.025:1
+    for i in 1:size(dp, 1)
+        for j in 2:length(ex)
+            if dp[i,:DistFromBack] <= ex[j]
+                dp[i,:BinDistFromBack] = (ex[j-1] + ex[j]) / 2
+                break
+            end
+        end
+    end
+
+    dq = by(dp, :BinDistFromBack) do d
+        e = 0:5:360
+        _, bin = hist(d[:Info], e)
+        DataFrame(Info=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
+    end
+
+    dqm = by(dp, :BinDistFromBack) do d
+        DataFrame(Info=median(d[:Info]))
+    end
+
+    p = plot(layer(dq, x=:BinDistFromBack, y=:Info, color=:Density, Geom.rectbin),
+        layer(dqm, x=:BinDistFromBack, y=:Info, Geom.line, order=1, Theme(default_color=colorant"black")),
+        Coord.cartesian(xmin=0, xmax=1, ymin=0, ymax=360),
+        Scale.y_continuous(labels=x->@sprintf("%dº", x)),
+        Guide.yticks(ticks=collect(0:45:360)),
+        Guide.xlabel("Normalized distance from back"),
+        Guide.ylabel("External visual field"))
+
+    #draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), p)
+    return p
+end
+
+
+function plot_personal_info_dist_edge(df::AbstractDataFrame)
+    # Limit to personal and outside swarm
+    idx = (df[:Kind].==:Personal) & (df[:DistFromEdge].>=0)
+
+    dp = df[idx,:]
+    dp[:Info] = 360 * dp[:Info]
+    # @show extrema(dp[:,:DistFromBack])
+    dp[:BinDistFromEdge] = convert(DataVector{Float64}, zeros(size(dp, 1)))
+    ex = 0:(1/2):5
+    for i in 1:size(dp, 1)
+        for j in 2:length(ex)
+            if dp[i,:DistFromEdge] <= ex[j]
+                dp[i,:BinDistFromEdge] = (ex[j-1] + ex[j]) / 2
+                break
+            end
+        end
+    end
+    deleterows!(dp, find(dp[:BinDistFromEdge].==0))
+
+    dq = by(dp, :BinDistFromEdge) do d
+        e = 0:5:360
+        _, bin = hist(d[:Info], e)
+        DataFrame(Info=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
+    end
+
+    dqm = by(dp, :BinDistFromEdge) do d
+        DataFrame(Info=median(d[:Info]))
+    end
+
+    p = plot(layer(dq, x=:BinDistFromEdge, y=:Info, color=:Density, Geom.rectbin),
+        layer(dqm, x=:BinDistFromEdge, y=:Info, Geom.line, order=1, Theme(default_color=colorant"black")),
+        Coord.cartesian(xmin=0, xmax=5, ymin=0, ymax=360),
+        Scale.y_continuous(labels=x->@sprintf("%dº", x)),
+        Guide.yticks(ticks=collect(0:45:360)),
+        Guide.xlabel("Distance from edge (body length)"),
+        Guide.ylabel("External visual field"))
+
+    #draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), p)
+    return p
+end
+
+
+function plot_social_info_dist_back(df::AbstractDataFrame)
+    # Limit to personal and outside swarm
+    idx = (df[:Kind].==:Social) & (df[:DistFromEdge].>=0)
+
+    dp = df[idx,:]
+
+    dp[:BinDistFromBack] = convert(DataVector{Float64}, zeros(size(dp, 1)))
+    ex = 0:0.025:1
+    for i in 1:size(dp, 1)
+        for j in 2:length(ex)
+            if dp[i,:DistFromBack] <= ex[j]
+                dp[i,:BinDistFromBack] = (ex[j-1] + ex[j]) / 2
+                break
+            end
+        end
+    end
+
+    dq = by(dp, :BinDistFromBack) do d
+        e = logspace(-6, -2, 64)
+        _, bin = hist(d[:Info], e)
+        DataFrame(Info=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
+    end
+
+    dqm = by(dp, :BinDistFromBack) do d
+        DataFrame(Info=median(d[:Info]))
+    end
+
+    p = plot(layer(dq, x=:BinDistFromBack, y=:Info, color=:Density, Geom.rectbin),
+        layer(dqm, x=:BinDistFromBack, y=:Info, Geom.line, order=1, Theme(default_color=colorant"black")),
+        Coord.cartesian(xmin=0, xmax=1, ymin=-6, ymax=-2),
+        Scale.y_log10(),
+        Guide.xlabel("Normalized distance from back"),
+        Guide.ylabel("Social influence"))
+
+    #draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), p)
+    return p
+end
+
+
+function plot_social_info_dist_edge(df::AbstractDataFrame)
+    # Limit to personal
+    idx = (df[:Kind] .== :Social)# & (df[:SwarmState] .== :Polarized)
+
+    dp = df[idx,:]
+
+    dp[:BinDistFromEdge] = convert(DataVector{Float64}, zeros(size(dp, 1)))
+    ex = 0:(1/2):5 # 0.125 # 0.03125
+    @inbounds for i in 1:size(dp, 1)
+        for j in 2:length(ex)
+            if dp[i,:DistFromEdge] <= ex[j]
+                dp[i,:BinDistFromEdge] = (ex[j-1] + ex[j]) / 2
+                break
+            end
+        end
+    end
+    deleterows!(dp, find(dp[:BinDistFromEdge].==0))
+
+    e = logspace(-6, -2, 64)
+    dq = by(dp, :BinDistFromEdge) do d
+        _, bin = hist(d[:Info], e)
+        DataFrame(Info=(e[2:end]+e[1:end-1])/2, Density=bin ./ maximum(bin))
+    end
+
+    dqm = by(dp, :BinDistFromEdge) do d
+        DataFrame(Info=median(d[:Info]))
+    end
+
+    p = plot(layer(dq, x=:BinDistFromEdge, y=:Info, color=:Density, Geom.rectbin),
+        layer(dqm, x=:BinDistFromEdge, y=:Info, Geom.line, order=1, Theme(default_color=colorant"black")),
+        Coord.cartesian(xmin=0, xmax=5, ymin=-6, ymax=-2),
+        Scale.y_log10(),
+        Guide.xlabel("Distance from edge (body length)"),
+        Guide.ylabel("Social influence"))
+
+    #draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), p)
     return p
 end
 
@@ -269,15 +540,65 @@ function myellipse(pos::Vec2, size::Vec2, offset::Real, θ::Real)
     polygon(points)
 end
 
-colorplot(p::Vector{State}, by::Vector{Float64}) = colorplot(p, by, bounds(p))
-function colorplot(p::Vector{State}, by::Vector{Float64}, bounds)
+colorplot{T<:Real}(p::Vector{State}, by::AbstractVector{T}) = colorplot(p, by, bounds(p))
+function colorplot{T<:Real}(p::Vector{State}, by::AbstractVector{T}, bounds)
     xmin, xmax, ymin, ymax = bounds
     box = UnitBox(xmin, ymax, xmax - xmin, ymin - ymax)
     c = context()
     for i in eachindex(p)
-        c = compose(c, (context(), myellipse(p[i].pos, Vec2(1, 0.125), 0.8, p[i].dir), fill(RGB(1, 1-by[i], 0))))
+        ctx = context(rotation=Rotation(-angle(p[i].vel), (p[i].pos.x, p[i].pos.y)))
+        c = compose(c, (ctx, ellipse(p[i].pos.x - 0.8/2, p[i].pos.y, 1/2, 0.125/2), fill(RGB(by[i], by[i], 0.5-by[i]/2))))
+        # c = compose(c, (context(), myellipse(p[i].pos, Vec2(1, 0.125), 0.8, p[i].dir), fill(RGB(1, 1-by[i], 0))))
     end
     compose(context(units=box), c)
+end
+
+
+simpleplot(p::Vector{State}) = simpleplot(p, bounds(p))
+function simpleplot(p::Vector{State}, bounds)
+    xmin, xmax, ymin, ymax = bounds
+    box = UnitBox(xmin, ymax, xmax - xmin, ymin - ymax)
+    c = context()
+    for i in eachindex(p)
+        ctx = context(rotation=Rotation(-angle(p[i].vel), (p[i].pos.x, p[i].pos.y)))
+        c = compose(c, (ctx, ellipse(p[i].pos.x - 0.8/2, p[i].pos.y, 1/2, 0.125/2)))
+        # c = compose(c, (context(), myellipse(p[i].pos, Vec2(1, 0.125), 0.8, p[i].dir)))
+    end
+    compose(context(units=box), c)
+end
+
+function distance_from_edge_plot(p::Vector{State}, de::Matrix{Float64}, grid::Matrix{Vec2})
+    plot(x=[z.x for z in grid[:,1]], y=[z.y for z in grid[1,:]], z=de, Geom.contour(levels=-5:0.25:5),
+        Guide.annotation(simpleplot(p, (-15, 15, -15, 15))),
+        Guide.xlabel("x (body length)"),
+        Guide.ylabel("y (body length)"),
+        Coord.cartesian(xmin=-15, xmax=15, ymin=-15, ymax=15, fixed=true)
+    )
+end
+
+function distance_from_edge_plot2(p::Vector{State};
+                  minvalue=-5, maxvalue=5, title="Distance from edge (body length)",
+                  colormap=x -> (x = minvalue + x * (maxvalue - minvalue); RGB(x < 0 ? 0 : 1, mod(x, 0.5), x < 0 ? 0 : mod(x, 0.5))))
+    xmin, xmax = -15, 15
+    ymin, ymax = -15, 15
+    grid = [Vec2(x,y) for x in xmin:0.1:xmax, y in ymin:0.1:ymax]
+    nx, ny = size(grid)
+    x = [z.x for z in grid[:]]
+    y = [z.y for z in grid[:]]
+    de = dist_from_edge(0, p, grid)
+    box = UnitBox(xmin, ymax, xmax - xmin, ymin - ymax)
+    c = context()
+    for i in eachindex(p)
+        ctx = context(rotation=Rotation(-angle(p[i].vel), (p[i].pos.x, p[i].pos.y)))
+        c = compose(c, (ctx, ellipse(p[i].pos.x - 0.8/2, p[i].pos.y, 1/2, 0.125/2)))
+    end
+    plot(x=x, y=y, color=de, Geom.rectbin,
+        Guide.annotation(compose(context(), c, fill(colorant"gold"))),
+        Guide.xlabel("x (body length)"),
+        Guide.ylabel("y (body length)"),
+        Guide.title(title),
+        Scale.color_continuous(minvalue=minvalue, maxvalue=maxvalue, colormap=colormap),
+        Coord.cartesian(raster=true, xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax, fixed=true))
 end
 
 
@@ -285,7 +606,7 @@ end
 function netvid(p::Matrix{State}, mask::BitArray{2}, si::Array{Float64, 3})
     xmin, xmax, ymin, ymax = bounds(p[mask])
     r = (ymax - ymin) / (xmax - xmin)
-    dir = "plots/vid/net"
+    dir = joinpath(plot_path, "vidnet")
     try rm(dir, recursive=true) end
     try mkdir(dir) end
     K = size(p, 2)
@@ -306,7 +627,7 @@ end
 function colorvidperso(p::Matrix{State}, mask::BitArray{2}, pi::Array{Float64, 2})
     xmin, xmax, ymin, ymax = bounds(p[mask])
     r = (ymax - ymin) / (xmax - xmin)
-    dir = "plots/vid/pi"
+    dir = joinpath(plot_path, "vidpi")
     try rm(dir, recursive=true) end
     try mkdir(dir) end
     K = size(p, 2)
@@ -325,7 +646,7 @@ end
 function colorvidsocial(p::Matrix{State}, mask::BitArray{2}, si::Array{Float64, 3})
     xmin, xmax, ymin, ymax = bounds(p[mask])
     r = (ymax - ymin) / (xmax - xmin)
-    dir = "plots/vid/si"
+    dir = joinpath(plot_path, "vidsi")
     try rm(dir, recursive=true) end
     try mkdir(dir) end
     K = size(p, 2)
@@ -353,13 +674,13 @@ function plotmap(df::AbstractDataFrame)
         Guide.ylabel("Distance from edge (body length)"),
         Guide.title("Polarized groups only"),
         Guide.colorkey("External\nvisual field"))
-    draw(PDF("heatmap_personal.pdf", 5.5inch, 4inch), p)
+    draw(PDF(joinpath(plot_path, "heatmap_personal.pdf"), 5.5inch, 4inch), p)
     p = plot(df2[df2[:Kind].==:Social,:], x=:BinDistFromBack, y=:BinDistFromEdge, color=:Info, Geom.rectbin,
         Guide.xlabel("Normalized distance from back to front"),
         Guide.ylabel("Distance from edge (body length)"),
         Guide.title("Polarized groups only"),
         Guide.colorkey("Social influence"))
-    draw(PDF("heatmap_social.pdf", 5.5inch, 4inch), p)
+    draw(PDF(joinpath(plot_path, "heatmap_social.pdf"), 5.5inch, 4inch), p)
 
     df3 = by(df[df[:SwarmState].==:Polarized,:], [:Kind, :BinFromBack, :BinFromEdgeRel]) do d
         # if nrow(d) < 100 return DataFrame() end
@@ -371,25 +692,25 @@ function plotmap(df::AbstractDataFrame)
         Guide.ylabel("Distance from edge (body length)"),
         Guide.title("Polarized groups only"),
         Guide.colorkey("External\nvisual field"))
-    draw(PDF("heatmap_personal_rel.pdf", 5.5inch, 4inch), p)
+    draw(PDF(joinpath(plot_path, "heatmap_personal_rel.pdf"), 5.5inch, 4inch), p)
     p = plot(df3[df3[:Kind].==:Social,:], x=:BinDistFromBack, y=:BinDistFromEdge, color=:Info, Geom.rectbin,
         Guide.xlabel("Normalized distance from back to front"),
         Guide.ylabel("Distance from edge (body length)"),
         Guide.title("Polarized groups only"),
         Guide.colorkey("Social influence"))
-    draw(PDF("heatmap_social_rel.pdf", 5.5inch, 4inch), p)
+    draw(PDF(joinpath(plot_path, "heatmap_social_rel.pdf"), 5.5inch, 4inch), p)
 
     p = plot(df2[df2[:Kind].==:Personal,:], x=:BinDistFromBack, y=:BinDistFromEdge, color=:Count, Geom.rectbin,
         Guide.xlabel("Normalized distance from back to front"),
         Guide.ylabel("Distance from edge (body length)"),
         Guide.title("Polarized groups only"),
         Guide.colorkey("Count"))
-    draw(PDF("heatmap_personal_count.pdf", 5.5inch, 4inch), p)
+    draw(PDF(joinpath(plot_path, "heatmap_personal_count.pdf"), 5.5inch, 4inch), p)
     p = plot(df3[df3[:Kind].==:Personal,:], x=:BinDistFromBack, y=:BinDistFromEdge, color=:Count, Geom.rectbin,
         Guide.xlabel("Normalized distance from back to front"),
         Guide.ylabel("Distance from edge (body length)"),
         Guide.title("Polarized groups only"),
         Guide.colorkey("Count"))
-    draw(PDF("heatmap_social_count.pdf", 5.5inch, 4inch), p)
+    draw(PDF(joinpath(plot_path, "heatmap_social_count.pdf"), 5.5inch, 4inch), p)
 end
 
