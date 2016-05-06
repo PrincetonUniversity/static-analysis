@@ -1,5 +1,24 @@
 # Consolidate and reformat datasets for ellipswarm.
 
+@step function get_net_file(p::Project)
+    # TODO: run static from here
+    path = p.conf[:net_file]
+    ishdf5(path) || error("You must run `static` first.")
+    path
+end
+
+@step function get_detect_file(p::Project)
+    # TODO: run detect from here
+    path = p.conf[:detect_file]
+    ishdf5(path) || error("You must run `detect` first.")
+    path
+end
+
+@step [get_net_file] function get_pos(p::Project)
+    h5read_particles(p.step[get_net_file])
+end
+
+
 # Datasets
 # --------
 
@@ -124,7 +143,7 @@ function makeUniformRandomDatasets(file::AbstractString; α::Real = -0.2)
 end
 
 
-function makeMitchellsBestCandidateRandomDatasets(file::AbstractString; α::Real = -0.2, num_candidates::Integer = 5)
+function makeMitchellsBestCandidateRandomDatasets(file::AbstractString; α::Real = -0.2, num_candidates::Integer = 5, σ::Real = deg2rad(10))
     p, mask = h5read_particles(file)
 
     N = size(p, 1) # max swarm size
@@ -134,13 +153,22 @@ function makeMitchellsBestCandidateRandomDatasets(file::AbstractString; α::Real
         @printf("\r%3d%%", 100(k-1) / K)
         nz = find(mask[:,k])
 
-        p[nz,k] = mbcRandom(p[nz,k], α=α, num_candidates=num_candidates)
+        p[nz,k] = mbcRandom(p[nz,k], α=α, num_candidates=num_candidates, σ=σ)
     end
 
     println("\r100%")
     h5write_particles(joinpath(data_path, "fulldata_random.h5"), p)
 end
 
+
+function allweights(si, mask)
+    r = Float64[]
+    for k in 1:size(mask, 2)
+        nz = mask[:,k]
+        append!(r, si[nz,nz,k][:])
+    end
+    r
+end
 
 function mbcRandom(p::Vector{State};
         α::Real = -0.2, num_candidates::Integer = 5, σ::Real = deg2rad(10))

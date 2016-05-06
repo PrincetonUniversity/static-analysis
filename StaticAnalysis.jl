@@ -2,14 +2,6 @@
 # ==============
 
 
-# Settings
-# --------
-
-data_path = joinpath(homedir(), "data", "static-analysis")
-plot_path = joinpath(homedir(), "plots", "static-analysis")
-
-α_radius = -0.2
-
 # Utils
 # -----
 
@@ -69,6 +61,8 @@ using Colors
 # I/O
 using HDF5
 using MAT
+using JLD
+using Formatting
 
 # Graphs
 using LightGraphs
@@ -77,8 +71,114 @@ using LightGraphs
 # Projects
 # --------
 #
-# Each file contains functions to generate or load data,
+# Each file contains *step* functions to generate or load data,
 # compute derived data (typically a DataFrame), and generate plots.
+
+"""A `Project` derives data using *step* functions.
+
+It is initialized with a specific configuration and
+also contains dependency information for all steps.
+"""
+type Project
+    uid::AbstractString
+    conf::Dict{Symbol, Any}
+    step::Dict{Function, Any}
+    deps::Dict{Function, Set{Function}}
+    Project(uid; config...) = new(uid, Dict{Symbol, Any}(config), Dict(), Dict())
+end
+
+"""Reset a step in a `Project` as well as all steps downstream."""
+function reset!(p::Project, step)
+    dir = joinpath(data_path, "Projects", p.uid)
+    bak = joinpath(dir, "backup")
+    mkpath(bak)
+    try
+        mv(joinpath(dir, "$(step).jld"),
+           joinpath(bak, "$(step).jld"),
+           remove_destination=true)
+    end
+    delete!(p.step, step)
+    reset_from!(p, step)
+end
+
+"""Reset all steps downstream of a step in a `Project`."""
+function reset_from!(p::Project, step)
+    for (s, deps) in p.deps
+        step in deps && reset!(p, s)
+    end
+end
+
+"""Rebuild a `Project` with missing steps."""
+function rebuild!(p::Project)
+    for (step, _) in p.deps
+        get!(()->step(p), p.step, step)
+    end
+    println("Done")
+end
+
+"""`@step` declares a *step* function, which takes a `Project` and
+populates the corresponding entry.
+
+The function may only use the entries of the `Project` indicated as
+dependencies in an optional vector of step functions immediatly
+following the `@step` declaration.
+
+### Example
+
+    @step function step_one(p::Project)
+        true
+    end
+
+    @step function step_two(p::Project)
+        12
+    end
+
+    @step [step_one, step_two] function step_three(p::Project)
+        p[step_one] ? 42 : p[step_two] + 1
+    end
+"""
+macro step(args...)
+    if length(args) == 1
+        deps, ex = Symbol[], args[1]
+    elseif length(args) == 2
+        deps, ex = args
+    else
+        error("Usage: @step [deps] func")
+    end
+    name, p = ex.args[1].args[1:2]
+    ex.args[1].args[1] = esc(ex.args[1].args[1])
+    ex.args[2] = quote
+        dir = joinpath(data_path, "Projects", $p.uid)
+        get!($p.deps, $name, Set{Function}())
+        for dep in $deps
+            push!($p.deps[$name], dep)
+            get!($p.step, dep) do
+                data = dep($p)
+                JLD.save(joinpath(dir, "$(dep).jld"), "data", data)
+                data
+            end
+        end
+        file = joinpath(dir, "$($name).jld")
+        if isfile(file)
+            println("Loading ", $name, ":")
+            $p.step[$name] = JLD.load(file, "data")
+        else
+            mkpath(dir)
+            println("Running ", $name, ":")
+            $p.step[$name] = begin $(ex.args[2]) end
+            JLD.save(file, "data", $p.step[$name])
+            $p.step[$name]
+        end
+    end
+    ex
+end
+
+
+# Colormaps and othe miscellaneous things.
+include("misc.jl")
+
+# Configuration(s).
+include("config.jl")
 
 # Consolidate and reformat datasets for ellipswarm.
 include("io.jl")

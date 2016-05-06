@@ -1,5 +1,24 @@
 # Compute α-shapes and distances from the edge of the α-shapes.
 
+@step [get_pos] function run_dist_from_edge(p::Project)
+    pos, mask = p.step[get_pos]
+    α = p.conf[:α]
+
+    N = size(pos, 1) # max swarm size
+    K = size(pos, 2) # replicates
+
+    de = zeros(N, K)
+    m = falses(N, K)
+    for k=1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = mask[:,k]
+        de[nz,k], m[nz,k] = dist_from_edge(α, pos[nz,k])
+    end
+    println("\r100%")
+    de, m
+end
+
+
 "An `AlphaShape` contains the different parts of an α-shape."
 type AlphaShape
     outer::Vector{Vector{Int}}

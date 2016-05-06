@@ -1,5 +1,323 @@
 # Analyse effect of changing interindividual distances.
 
+
+@step function run_rescaling_info(p::Project)
+    rps = rescaled_projects()
+    for rp in rps
+        println(format("\n# Scale {:.2f}", rp.conf[:scale]))
+        run_info(rp)
+        rp.step[run_info][:Scale] = rp.conf[:scale]
+    end
+    vcat(DataFrame[rp.step[run_info] for rp in rps])
+end
+
+
+@step function run_rescaling_structure(p::Project)
+    rps = rescaled_projects()
+    for rp in rps
+        println(format("\n# Scale {:.2f}", rp.conf[:scale]))
+        run_structure(rp)
+        rp.step[run_structure][:Scale] = rp.conf[:scale]
+    end
+    vcat(DataFrame[rp.step[run_structure] for rp in rps])
+end
+
+
+@step function run_rescaling_spread(p::Project)
+    rps = rescaled_sub_projects()
+    for rp in rps
+        println(format("\n# Scale {:.2f}", rp.conf[:scale]))
+        run_spread(rp)
+        rp.step[run_spread][:Scale] = rp.conf[:scale]
+    end
+    vcat(DataFrame[rp.step[run_spread] for rp in rps])
+end
+
+
+@step [run_rescaling_info] function plot_rescaling_info(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_rescaling_info])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to polarized swarms
+    df = df[df[:State].=="Polarized",:]
+
+    # Rescale personal info from [0,1] to [0,360]
+    df[df[:Kind] .== "Personal", :Info] *= 360
+
+    # Normalized distance from edge
+    df[:NormDistFromEdge] = df[:DistFromEdge] ./ df[:Scale]
+
+    # Round scaling factors
+    for scale in [1/2,1/√2,1,√2,2]
+        df[df[:Scale].==scale,:Scale] = round(scale, 2)
+    end
+
+    function bin_dist(dist, edges)
+        @inbounds for row in eachrow(df)
+            for j in 2:length(edges)
+                if row[dist] < edges[j]
+                    row[dist] = (edges[j-1] + edges[j]) / 2
+                    break
+                end
+            end
+        end
+        df[df[dist] .< last(edges),:]
+    end
+
+    function plot_dist(df, dist, info, tag, xlabel, xmax, ylabel, ymin, ymax, ticks, scale)
+        # compute mean and SEM
+        # sub = (df[:Kind] .== info) & (df[:Info] .!= Inf)
+        sub = Bool[(row[:Kind] == info) & (row[:Info] != Inf) for row in eachrow(df)]
+        dfm = by(df[sub,:], [:Scale, dist]) do d
+            if info == "Social"
+                m, s = median(d[:Info]), sem(log10(d[:Info]))
+                DataFrame(Median=m, Min=m*10^-s, Max=m*10^s)
+            else
+                m, s = median(d[:Info]), sem(d[:Info])
+                DataFrame(Median=m, Min=m-s, Max=m+s)
+            end
+        end
+
+        h = plot(dfm, x=dist, y=:Median, ymin=:Min, ymax=:Max, color=:Scale,
+            Geom.point, Geom.line, Geom.errorbar,
+            # Scale.color_log2(colormap=cmap),
+            Scale.color_discrete_manual(map(cmap, linspace(0, 0.9, 5))...),
+            Coord.cartesian(xmin=0, xmax=xmax, ymin=ymin, ymax=ymax),
+            scale,
+            ticks,
+            Guide.xlabel(xlabel),
+            Guide.ylabel(ylabel),
+            Theme(; base_theme...))
+
+        name = string("rescaling_", tag, ".pdf")
+        draw(PDF(joinpath(plot_path, name), 6inch, 4inch), h)
+    end
+
+    print("\r 10%")
+
+    dfe = bin_dist(:DistFromEdge, linspace(0, 5, 11))
+    print("\r 20%")
+
+    plot_dist(dfe, :DistFromEdge, "Personal", "evf_edge",
+        "Distance from edge (body length)", 5,
+        "External visual field", 0, 360,
+        Guide.yticks(ticks=collect(0:45:360)),
+        Scale.y_continuous(labels=x->@sprintf("%d°", x)))
+    print("\r 30%")
+
+    plot_dist(dfe, :DistFromEdge, "Social", "si_edge",
+        "Distance from edge (body length)", 5,
+        "Social influence", -7, -2,
+        Guide.yticks,
+        Scale.y_log10)
+    print("\r 40%")
+
+    dfb = bin_dist(:DistFromBack, linspace(0, 1, 11))
+    print("\r 50%")
+
+    plot_dist(dfb, :DistFromBack, "Personal", "evf_back",
+        "Normalized distance from back to front", 1,
+        "External visual field", 0, 360,
+        Guide.yticks(ticks=collect(0:45:360)),
+        Scale.y_continuous(labels=x->@sprintf("%d°", x)))
+    print("\r 60%")
+
+    plot_dist(dfb, :DistFromBack, "Social", "si_back",
+        "Normalized distance from back to front", 1,
+        "Social influence", -7, -2,
+        Guide.yticks,
+        Scale.y_log10)
+    print("\r 70%")
+
+    dfn = bin_dist(:NormDistFromEdge, linspace(0, 5, 11))
+    print("\r 80%")
+
+    plot_dist(dfn, :NormDistFromEdge, "Personal", "evf_edge_norm",
+        "Normalized distance from edge", 5,
+        "External visual field", 0, 360,
+        Guide.yticks(ticks=collect(0:45:360)),
+        Scale.y_continuous(labels=x->@sprintf("%d°", x)))
+    print("\r 90%")
+
+    plot_dist(dfn, :NormDistFromEdge, "Social", "si_edge_norm",
+        "Normalized distance from edge", 5,
+        "Social influence", -7, -2,
+        Guide.yticks,
+        Scale.y_log10)
+    println("\r100%")
+end
+
+
+@step [run_rescaling_structure] function plot_rescaling_structure(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_rescaling_structure])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Filter neighbor angles
+    df = df[isnan(df[:NeighborAngle]),:]
+
+    # Convert angles from rad to deg
+    df[:ComponentAngle] *= 180/pi
+
+    # Round scaling factors
+    for scale in [1/2,1/√2,1,√2,2]
+        df[df[:Scale].==scale,:Scale] = round(scale, 2)
+    end
+
+    # Filter components with a well-defined orientation
+    wdo = df[:ComponentAspectRatio] .< 1/√2
+
+    function plot_col(df, col, edges, tag, ticks, scale, ylabel)
+        dfm = by(df, [:WeakestLink, :Scale]) do d
+            if col == :ComponentAngle
+                pos, neg = d[d[col].>0,col], d[d[col].<0,col]
+                mpos, spos = median(pos), sem(pos)
+                mneg, sneg = median(neg), sem(neg)
+                DataFrame(
+                    MedianPos=mpos, MinPos=mpos-spos, MaxPos=mpos+spos,
+                    MedianNeg=mneg, MinNeg=mneg-sneg, MaxNeg=mneg+sneg)
+            else
+                m, s = median(d[col]), sem(d[col])
+                DataFrame(Median=median(d[col]), Min=m-s, Max=m+s)
+            end
+        end
+        layers = Layer[]
+        if col == :ComponentSize
+            append!(layers, [
+                layer(dfm, x=:WeakestLink, ymin=:Min, ymax=:Max, color=:Scale,
+                    Geom.errorbar, order=0);
+                layer(dfm, x=:WeakestLink, y=:Median, color=:Scale,
+                    Geom.line, order=1);
+                layer(dfm, x=:WeakestLink, y=:Median, color=:Scale,
+                    Geom.point, order=2)
+            ])
+        elseif col == :ComponentAngle
+            append!(layers, [
+            layer(dfm, x=:WeakestLink, ymin=:MinPos, ymax=:MaxPos, color=:Scale,
+                Geom.errorbar, order=0);
+            layer(dfm, x=:WeakestLink, y=:MedianPos, color=:Scale,
+                Geom.line, order=1);
+            layer(dfm, x=:WeakestLink, y=:MedianPos, color=:Scale,
+                Geom.point, order=2);
+            layer(dfm, x=:WeakestLink, ymin=:MinNeg, ymax=:MaxNeg, color=:Scale,
+                Geom.errorbar, order=0);
+            layer(dfm, x=:WeakestLink, y=:MedianNeg, color=:Scale,
+                Geom.line, order=1);
+            layer(dfm, x=:WeakestLink, y=:MedianNeg, color=:Scale,
+                Geom.point, order=2)
+            ])
+        end
+        h = plot(
+            layers...,
+            Coord.cartesian(xmin=-2.5, xmax=-0.5, ymin=edges[1], ymax=edges[end]),
+            scale,
+            Scale.x_log10,
+            Scale.color_discrete_manual(map(cmap, linspace(0, 0.9, 5))...),
+            ticks,
+            Guide.xlabel("Weakest link threshold"),
+            Guide.ylabel(ylabel),
+            Theme(; base_theme...))
+
+        name = string("rescaling_", tag, ".pdf")
+        draw(PDF(joinpath(plot_path, name), 6inch, 4inch), h)
+    end
+
+    print("\r 40%")
+
+    plot_col(df, :ComponentSize, 0:5:160, "component_size",
+        Scale.y_continuous,
+        Guide.yticks,
+        "Component size")
+    print("\r 70%")
+
+    plot_col(df[wdo,:], :ComponentAngle, -90:5:90, "component_angle",
+        Scale.y_continuous(labels=x->@sprintf("%d°", x)),
+        Guide.yticks,
+        "Component relative orientation")
+    println("\r100%")
+end
+
+
+@step [run_rescaling_spread] function plot_rescaling_spread(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_rescaling_spread])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to polarized
+    df = df[df[:State].=="Polarized",:]
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+
+    # Covert relative dir to degrees
+    df[:RelativeDir] = rad2deg(mod(df[:RelativeDir] + 3pi, 2pi) - pi)
+
+    df[:Detections] = convert(DataVector{Float64}, df[:Detections])
+
+    ey = -180:15:180
+    for i in 1:size(df, 1)
+        for j in 2:length(ey)
+            if df[i,:RelativeDir] < ey[j]
+                df[i,:RelativeDir] = (ey[j-1] + ey[j]) / 2
+                break
+            end
+        end
+    end
+
+    # Round scaling factors
+    for scale in [1/2,1/√2,1,√2,2]
+        df[df[:Scale].==scale,:Scale] = round(scale, 2)
+    end
+    print("\r 10%")
+
+    function plot_col(col, tag, ymin, ymax, ylabel)
+        dfm = by(df, [:RelativeDir, :Scale]) do d
+            rho = col(d)
+            m, s = mean(rho[!isnan(rho)]), sem(rho[!isnan(rho)])
+            DataFrame(Mean=m, Min=m-s, Max=m+s)
+        end
+
+        h = plot(
+            layer(dfm, x=:RelativeDir, ymin=:Min, ymax=:Max, color=:Scale, Geom.errorbar),
+            layer(dfm, x=:RelativeDir, y=:Mean, color=:Scale, Geom.line, order=1),
+            layer(dfm, x=:RelativeDir, y=:Mean, color=:Scale, Geom.point, order=2),
+            Coord.cartesian(xmin=-180, xmax=180, ymin=ymin, ymax=ymax),
+            Scale.color_discrete_manual(map(cmap, linspace(0, 0.9, 5))...),
+            Scale.x_continuous(labels=x->@sprintf("%d°", x)),
+            Guide.xticks(ticks=collect(-180:30:180)),
+            Guide.xlabel("Angle relative to group direction"),
+            Guide.ylabel(ylabel),
+            Theme(; base_theme...))
+
+        name = string("rescaling_", tag, ".pdf")
+        draw(PDF(joinpath(plot_path, name), 6inch, 6inch/φ), h)
+    end
+
+    plot_col(d->d[:ExpectedCascadeSize],
+        "cascade_size", 20, 70,
+        "Expected cascade size")
+    print("\r 40%")
+
+    plot_col(d->d[:ExpectedCascadeSize] - d[:Detections],
+        "spread", 0, 25,
+        "Expected spread")
+    print("\r 70%")
+
+    plot_col(d->(d[:ExpectedCascadeSize] - d[:Detections]) ./ d[:Detections],
+        "rel_spread", 0, 1.5,
+        "Expected relative spread")
+    println("\r100%")
+end
+
+
 function runscale()
     lab = ["1÷2", "1÷√2", "1", "√2", "2"]
     val = [1/2, 1/√2, 1, √2, 2]

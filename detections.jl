@@ -1,5 +1,260 @@
 # Analyze detection count in and around the schools.
 
+@step [get_detect_file] function get_grid(p::Project)
+    load_grid(p.step[get_detect_file])
+end
+
+# @step [get_detect_file] function get_detections(p::Project)
+#     load_detections(p.step[get_detect_file])
+# end
+
+@step [get_pos, get_grid] function run_dist_from_edge_grid(p::Project)
+    pos, mask = p.step[get_pos]
+    α = p.conf[:α]
+
+    K = size(pos, 2) # replicates
+
+    grid = p.step[get_grid]
+    nx, ny = size(grid)
+
+    de = zeros(nx * ny, K)
+    msk = falses(nx * ny, K)
+    for k=1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = mask[:,k]
+        de[:,k], msk[:,k] = dist_from_edge(α, pos[nz,k], grid)
+    end
+    println("\r100%")
+    de, msk
+end
+
+
+@step [get_pos, get_grid, get_detect_file, run_dist_from_edge_grid] function run_detect(p::Project)
+    pos, mask = p.step[get_pos]
+    α = p.conf[:α]
+    grid = p.step[get_grid]
+    detections = load_detections(p.step[get_detect_file])
+
+    N = size(pos, 1) # max swarm size
+    K = size(pos, 2) # replicates
+    nx, ny = size(grid)
+
+    gxmin, gxmax = extrema([v.x for v in grid])
+    gymin, gymax = extrema([v.y for v in grid])
+
+    # distance from edge
+    dem, msk = p.step[run_dist_from_edge_grid]
+
+    # distances, order parameters, dataframe
+    cols = [
+        (:DistFromEdge,       Float64),
+        (:MaxRadius,          Float64),
+        (:RelativeDir,        Float64),
+        (:SwarmID,            Int),
+        (:Polarization,       Float64),
+        (:Rotation,           Float64),
+        (:State,              ASCIIString),
+        (:Detections,         Int),
+    ]
+    df = DataFrame([x[2]::DataType for x in cols], [x[1]::Symbol for x in cols], 0)
+    for k=1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = mask[:,k]
+        mz = msk[:,k]
+
+        v = mainshape(alphashape(α, pos[nz,k])) # FIXME: slow and stupid
+        xmin, xmax = extrema([pos[nz[i],k].pos.x for i in v])
+        ymin, ymax = extrema([pos[nz[i],k].pos.y for i in v])
+        rmax = min(abs(gxmin - xmin), abs(gxmax - xmax),
+                   abs(gymin + ymin), abs(gymax - ymax))
+
+        # order parameters and state, relative direction
+        dir = NaN
+        op, or = order_parameters(pos[nz,k])
+        if op > 0.65 && or < 0.35
+            state = "Polarized"
+            dir = relative_dir(pos[nz,k], grid)[mz]
+        elseif op < 0.35 && or > 0.65
+            state = "Milling"
+        elseif op < 0.35 && or < 0.35
+            state = "Swarming"
+        else
+            state = "Transitioning"
+        end
+
+        # append to dataframe
+        row = DataFrame(
+            DistFromEdge       = dem[mz,k],
+            MaxRadius          = rmax,
+            RelativeDir        = dir,
+            SwarmID            = k,
+            Polarization       = op,
+            Rotation           = or,
+            State              = state,
+            Detections         = Vector{Int}(map(countnz, detections[:,:,k][mz])),
+        )
+        append!(df, row)
+    end
+    pool!(df, :State)
+    println("\r100%")
+
+    df
+end
+
+
+@step [run_detect] function plot_detect(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_detect])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to polarized
+    df = df[df[:State].=="Polarized",:]
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+
+    # Covert relative dir to degrees
+    df[:RelativeDir] = rad2deg(mod(df[:RelativeDir] + 3pi, 2pi) - pi)
+
+    function bin_col(col, edges)
+        for row in eachrow(df)
+            for j in 2:length(edges)
+                if row[col] < edges[j]
+                    row[col] = (edges[j-1] + edges[j]) / 2
+                    break
+                end
+            end
+        end
+        df[df[col] .< last(edges),:]
+    end
+
+    df = bin_col(:RelativeDir, -180:5:180)
+    print("\r 50%")
+
+    edges = 0:2:80
+    dfd = by(df, :RelativeDir) do d
+        _, bin = hist(d[:Detections], edges)
+        DataFrame(Detections=(edges[2:end]+edges[1:end-1])/2, Density=bin ./ sum(bin))
+    end
+
+    h = plot(dfd, x=:RelativeDir, y=:Detections, color=:Density, Geom.rectbin,
+        Coord.cartesian(xmin=-180, xmax=180),
+        Scale.x_continuous(labels=x->@sprintf("%d°", x)),
+        Scale.color_continuous(colormap=cmap),
+        Guide.xticks(ticks=collect(-180:30:180)),
+        Guide.xlabel("Relative angular position"),
+        Guide.ylabel("Detection count"))
+
+    draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), h)
+    println("\r100%")
+end
+
+
+@step [run_detect] function plot_detect_polar(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_detect])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to polarized
+    df = df[df[:State].=="Polarized",:]
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+
+    # Covert relative dir to degrees
+    df[:RelativeDir] = rad2deg(mod(df[:RelativeDir] + 3pi, 2pi) - pi)
+
+    dp[:Detections] = convert(DataVector{Float64}, dp[:Detections])
+    ex = 0:1:30
+    ey = -180:5:180
+    for i in 1:size(dp, 1)
+        for j in 2:length(ex)
+            if df[i,:DistFromEdge] < ex[j]
+                df[i,:DistFromEdge] = (ex[j-1] + ex[j]) / 2
+                break
+            end
+        end
+        for j in 2:length(ey)
+            if df[i,:RelativeDir] < ey[j]
+                df[i,:BinRelativeDir] = (ey[j-1] + ey[j]) / 2
+                break
+            end
+        end
+    end
+    df = df[df[:DistFromEdge].<ex[end],:]
+    print("\r 50%")
+
+    dfm = by(df, [:DistFromEdge, :RelativeDir]) do d
+        DataFrame(Detections=mean(d[:Detections]))
+    end
+
+    h = plot(dfm, x=:DistFromEdge, y=:RelativeDir, color=:Detections,
+        Geom.rectbin,
+        Coord.cartesian(xmin=ex[1], xmax=ex[end], ymin=ey[1], ymax=ey[end]),
+        Scale.y_continuous(labels=x->@sprintf("%d°", x)),
+        Scale.color_continuous(colormap=cmap, maxvalue=50),
+        Guide.yticks(ticks=collect(-180:30:180)),
+        Guide.xlabel("Distance from edge (body length)"),
+        Guide.ylabel("Relative angular position"),
+        Guide.colorkey("Average\ndetection\ncount"),
+        Theme(; base_theme...))
+
+    draw(PDF(joinpath(plot_path, "detections_dist_angle.pdf"), 6inch, 4inch), h)
+
+    println("\r100%")
+end
+
+
+@step [run_detect] function plot_detect_radius(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_detect])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+    print("\r 10%")
+
+    edges = 0:2:30
+    @inbounds for row in eachrow(df)
+        for j in 2:length(edges)
+            if row[:DistFromEdge] < edges[j]
+                row[:DistFromEdge] = (edges[j-1] + edges[j]) / 2
+                break
+            end
+        end
+    end
+    df = df[df[:DistFromEdge] .< last(edges),:]
+    print("\r 40%")
+
+    dfm = by(df, [:DistFromEdge, :State]) do d
+        m, s = mean(d[:Detections]), sem(d[:Detections])
+        DataFrame(Mean=m, Min=m-s, Max=m+s)
+    end
+
+    print("\r 60%")
+    h = plot(layer(dfm, x=:DistFromEdge, ymin=:Min, ymax=:Max, color=:State, Geom.errorbar),
+        layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.line, order=1),
+        layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.point, order=2),
+        Coord.cartesian(xmin=0, xmax=30, ymin=15, ymax=35),
+        Guide.xlabel("Distance from edge (body length)"),
+        Guide.ylabel("Number of detections"),
+        Theme(; base_theme...))
+
+    name = joinpath(plot_path, "detect_radius.pdf")
+    draw(PDF(name, 6inch, 4inch), h)
+
+    println("\r100%")
+end
+
 
 # I/O
 # ---
@@ -110,25 +365,30 @@ end
 
 "dist_from_edge computes the distance of each grid point to the edge of the α-shape."
 function dist_from_edge(α::Real, p::Vector{State}, grid::Matrix{Vec2})
-    d = Vector{Float64}(length(grid))
+    mask = falses(length(grid))
+    de = Vector{Float64}(length(grid))
     shape = alphashape(α, p)
+    v = mainshape(shape)
+    vp = Vec2[p[i].pos for i in v]
     @inbounds for i in eachindex(grid)
-        dmin = Inf
         m = grid[i]
-        for kind in (shape.outer, shape.degen), v in kind, j=1:length(v)
+        dmin = Inf
+        for j=1:length(v)
             k = j == 1 ? length(v) : j-1
             a, b = p[v[j]].pos, p[v[k]].pos
             u = b - a
             t = dot(m - a, u) / norm(u)^2
-            d0 = norm(a + clamp(t, 0, 1) * u - m)
-            dmin = min(dmin, d0)
+            d = norm(a + clamp(t, 0, 1) * u - m)
+            dmin = min(dmin, d)
         end
-        d[i] = dmin
-        if any([inpolygon(m, Vec2[x.pos for x in p[v]]) for v in shape.outer])
-            d[i] = -dmin
+        de[i] = dmin
+        if inpolygon(m, vp)
+            de[i] = -dmin
+        else
+            mask[i] = true
         end
     end
-    d
+    de, mask
 end
 
 
@@ -238,7 +498,7 @@ function detectvid(p::Matrix{State}, mask::BitArray{2}, detect::Array{Int, 3})
     println("\r100%")
 end
 
-function plot_detect_radius(df::AbstractDataFrame)
+function plot_detect_radius_old(df::AbstractDataFrame)
     # Limit to max disk and outside swarm
     dp = df[df[:InsideMaxDisk] & (df[:DistFromEdge].>=0),:]
     dp[:Detections] = convert(DataVector{Float64}, dp[:Detections])
@@ -256,7 +516,7 @@ function plot_detect_polar(df::AbstractDataFrame)
 
     dp = df[idx,:]
     dp[:Detections] = convert(DataVector{Float64}, dp[:Detections])
-    dp[:RelativeDir] = rad2deg(mod2pi(dp[:RelativeDir] + 3pi) - pi)
+    dp[:RelativeDir] = rad2deg(mod(dp[:RelativeDir] + 3pi, 2pi) - pi)
 
     dp[:BinDistFromEdge] = convert(DataVector{Float64}, zeros(size(dp, 1)))
     dp[:BinRelativeDir] = convert(DataVector{Float64}, zeros(size(dp, 1)))
@@ -286,10 +546,10 @@ function plot_detect_polar(df::AbstractDataFrame)
         Geom.rectbin,
         Coord.cartesian(xmin=0, xmax=ex[end], ymin=-180, ymax=180),
         Scale.y_continuous(labels=x->@sprintf("%dº", x)),
+        Scale.color_continuous(colormap=viridis, maxvalue=50),
         Guide.yticks(ticks=collect(-180:30:180)),
         Guide.xlabel("Distance from edge (body length)"),
         Guide.ylabel("Relative angular position"),
-        # Guide.title("Polarized schools only"),
         Guide.colorkey("Average\ndetection\ncount"))
 
     draw(PDF(joinpath(plot_path, "detections_dist_angle.pdf"), 6inch, 4inch), p)
@@ -301,16 +561,15 @@ function plot_detect_polar2(df::AbstractDataFrame)
 
     dp = df[idx,:]
     dp[:Detections] = convert(DataVector{Float64}, dp[:Detections])
-    dp[:RelativeDir] = rad2deg(mod2pi(dp[:RelativeDir] + 3pi) - pi)
+    dp[:RelativeDir] = rad2deg(mod(dp[:RelativeDir] + 3pi, 2pi) - pi)
 
     p = plot(dp, x=:RelativeDir, y=:Detections, Geom.line,
         Stat.binmean(n=36*2),
         Coord.cartesian(xmin=-180, xmax=180),
         Scale.x_continuous(labels=x->@sprintf("%dº", x)),
         Guide.xticks(ticks=collect(-180:30:180)),
-        Guide.xlabel("Angle relative to group direction"),
-        Guide.ylabel("Detection count"),
-        Guide.title("Polarized schools only"))
+        Guide.xlabel("Relative angular position"),
+        Guide.ylabel("Detection count"))
 
     draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), p)
 end
@@ -321,7 +580,7 @@ function plot_detect_polar3(df::AbstractDataFrame)
 
     dp = df[idx,:]
     dp[:Detections] = convert(DataVector{Float64}, dp[:Detections])
-    dp[:RelativeDir] = rad2deg(mod2pi(dp[:RelativeDir] + 3pi) - pi)
+    dp[:RelativeDir] = rad2deg(mod(dp[:RelativeDir] + 3pi, 2pi) - pi)
 
     dp[:BinRelativeDir] = convert(DataVector{Float64}, zeros(size(dp, 1)))
     ey = -180:5:180
@@ -343,10 +602,10 @@ function plot_detect_polar3(df::AbstractDataFrame)
     p = plot(dq, x=:BinRelativeDir, y=:Detections, color=:Density, Geom.rectbin,
         Coord.cartesian(xmin=-180, xmax=180),
         Scale.x_continuous(labels=x->@sprintf("%dº", x)),
+        Scale.color_continuous(colormap=viridis),
         Guide.xticks(ticks=collect(-180:30:180)),
-        Guide.xlabel("Angle relative to group direction"),
-        Guide.ylabel("Detection count"),
-        Guide.title("Polarized schools only"))
+        Guide.xlabel("Relative angular position"),
+        Guide.ylabel("Detection count"))
 
     draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), p)
 end
