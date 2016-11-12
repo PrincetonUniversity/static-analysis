@@ -146,7 +146,8 @@ end
         Scale.color_continuous(colormap=cmap),
         Guide.xticks(ticks=collect(-180:30:180)),
         Guide.xlabel("Relative angular position"),
-        Guide.ylabel("Detection count"))
+        Guide.ylabel("Detection count"),
+        Theme(; base_theme...))
 
     draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), h)
     println("\r100%")
@@ -170,10 +171,10 @@ end
     # Covert relative dir to degrees
     df[:RelativeDir] = rad2deg(mod(df[:RelativeDir] + 3pi, 2pi) - pi)
 
-    dp[:Detections] = convert(DataVector{Float64}, dp[:Detections])
+    df[:Detections] = convert(DataVector{Float64}, df[:Detections])
     ex = 0:1:30
     ey = -180:5:180
-    for i in 1:size(dp, 1)
+    for i in 1:size(df, 1)
         for j in 2:length(ex)
             if df[i,:DistFromEdge] < ex[j]
                 df[i,:DistFromEdge] = (ex[j-1] + ex[j]) / 2
@@ -182,7 +183,7 @@ end
         end
         for j in 2:length(ey)
             if df[i,:RelativeDir] < ey[j]
-                df[i,:BinRelativeDir] = (ey[j-1] + ey[j]) / 2
+                df[i,:RelativeDir] = (ey[j-1] + ey[j]) / 2
                 break
             end
         end
@@ -510,7 +511,7 @@ function plot_detect_radius_old(df::AbstractDataFrame)
         Guide.colorkey("State"))
 end
 
-function plot_detect_polar(df::AbstractDataFrame)
+function plot_detect_polar_alt(df::AbstractDataFrame)
     # Limit to polarized, max disk and outside swarm
     idx = (df[:SwarmState].==:Polarized) & df[:InsideMaxDisk] & (df[:DistFromEdge].>=0)
 

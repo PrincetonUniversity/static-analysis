@@ -24,7 +24,7 @@ for op in [:+, :-, :*, :/]
     @eval $op(u::Vec2, x::Real) = Vec2($op(u.x, x), $op(u.y, x))
 end
 
-import Base: norm, angle, dot, cross
+import Base: norm, angle, dot, cross, mod
 norm(u::Vec2) = hypot(u.x, u.y)
 dist(u::Vec2, v::Vec2) = norm(u - v)
 unit(u::Vec2) = u / norm(u)
@@ -32,6 +32,7 @@ angle(u::Vec2) = atan2(u.y, u.x)
 angle(u::Vec2, v::Vec2) = mod2pi(angle(u) - angle(v) + 3π) - π
 dot(u::Vec2, v::Vec2) = u.x * v.x + u.y * v.y
 cross(u::Vec2, v::Vec2) = u.x * v.y - u.y * v.x
+mod(u::Vec2, m) = Vec2(mod(u.x, m), mod(u.y, m))
 
 import Base: mean
 function mean(p::Vector{State})
@@ -195,14 +196,17 @@ include("detections.jl")
 # Strip detections based on visual zones (binocular, blind…)
 include("zones.jl")
 
-# Analyse structure of visual interaction networks.
+# Analyze structure of visual interaction networks.
 include("structure.jl")
 
-# Analyse correlation of information in detections.
+# Analyze correlation of information in detections.
 include("spread.jl")
 
-# Analyse effect of changing interindividual distances.
+# Analyze effect of changing interindividual distances.
 include("rescaling.jl")
+
+# Analyze effect of turbidity on schooling behavior.
+include("turbidity.jl")
 
 
 nothing

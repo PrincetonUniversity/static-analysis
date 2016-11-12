@@ -1050,7 +1050,7 @@ magma(x::Real) = _colormap(magma_data, x)
 "inferno colormap"
 inferno(x::Real) = _colormap(inferno_data, x)
 
-"viridis colormap"
+"plasma colormap"
 plasma(x::Real) = _colormap(plasma_data, x)
 
 "viridis colormap"

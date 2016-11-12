@@ -167,6 +167,119 @@ end
 end
 
 
+@step [run_info] function plot_evf_si_std_combined(p::Project)
+    df = copy(p.step[run_info])
+    theme = copy(p.conf[:theme])
+    # theme[:major_label_font_size] = 10pt * 4/3
+    # theme[:minor_label_font_size] = 9pt * 4/3
+    # theme[:key_title_font_size] = 0pt
+    # theme[:key_label_font_size] = 9pt * 4/3
+
+    rosenthal = readtable("rosenthal.csv")
+
+    # polarized groups only as in Rosenthal et al. (2015) PNAS
+    df = df[df[:State].=="Polarized",:]
+
+    function plot_std(col, upper, label)
+
+        # bin distances
+        nbins = 11
+        bin_edge = linspace(0, upper, nbins + 1)
+        for row in eachrow(df)
+            for j in 2:length(bin_edge)
+                if row[col] < bin_edge[j]
+                    row[col] = (bin_edge[j-1] + bin_edge[j]) / 2
+                    break
+                end
+            end
+        end
+        sub = df[col] .< upper
+
+        # compute mean and SEM
+        dfe = by(df[sub,:], [:Kind, col]) do d
+            m, s = mean(d[:Info]), sem(d[:Info])
+            DataFrame(Mean=m, Min=m-s, Max=m+s)
+        end
+
+        # standardize units
+        dfe = by(dfe, :Kind) do d
+            m, s = mean(d[:Mean]), std(d[:Mean]) * 2
+            DataFrame(Dist=d[col], Mean=(d[:Mean]-m)./s, Min=(d[:Min]-m)./s, Max=(d[:Max]-m)./s)
+        end
+
+        # filter rosenthal data
+        dfr = rosenthal[rosenthal[:DistType].==string(col),:]
+        dfr[:Dist] = dfe[:Dist]
+
+        # plot
+        color_social = colorant"#f12"
+        color_personal = colorant"#08c"
+        plt = plot(
+            layer(dfr[dfr[:Kind].=="Social",:],
+                x=:Dist, ymin=:Min, ymax=:Max,
+                Geom.errorbar, order=-2,
+                Theme(default_color=colorant"orange")),
+            layer(dfr[dfr[:Kind].=="Social",:],
+                x=:Dist, y=:Mean,
+                Geom.line, order=-1,
+                Theme(default_color=colorant"orange")),
+            layer(dfr[dfr[:Kind].=="Personal",:],
+                x=:Dist, ymin=:Min, ymax=:Max,
+                Geom.errorbar, order=-4,
+                Theme(default_color=colorant"cyan")),
+            layer(dfr[dfr[:Kind].=="Personal",:],
+                x=:Dist, y=:Mean,
+                Geom.line, order=-3,
+                Theme(default_color=colorant"cyan")),
+            layer(dfe[dfe[:Kind].=="Social",:],
+                x=:Dist, ymin=:Min, ymax=:Max,
+                Geom.errorbar, order=3,
+                Theme(default_color=color_social)),
+            layer(dfe[dfe[:Kind].=="Social",:],
+                x=:Dist, y=:Mean,
+                Geom.line, order=4,
+                Theme(default_color=color_social)),
+            layer(dfe[dfe[:Kind].=="Social",:],
+                x=:Dist, y=:Mean,
+                Geom.point, order=5,
+                Theme(default_color=color_social)),
+            layer(dfe[dfe[:Kind].=="Personal",:],
+                x=:Dist, ymin=:Min, ymax=:Max,
+                Geom.errorbar, order=0,
+                Theme(default_color=color_personal)),
+            layer(dfe[dfe[:Kind].=="Personal",:],
+                x=:Dist, y=:Mean,
+                Geom.line, order=1,
+                Theme(default_color=color_personal)),
+            layer(dfe[dfe[:Kind].=="Personal",:],
+                x=:Dist, y=:Mean,
+                Geom.point, order=2,
+                Theme(default_color=color_personal)),
+            Coord.cartesian(xmin=0, xmax=upper, ymin=-0.7, ymax=1.25),
+            Guide.xlabel(label),
+            Guide.ylabel("Standardized units"),
+            Guide.manual_color_key("",[""],[colorant"white"]),
+            # Guide.manual_color_key("",
+            #     ["social influence", "external visual field"],
+            #     [color_social, color_personal]),
+            Theme(key_position=:top; theme...))
+
+        name = col == :DistFromBack ? "evf_si_std_back_combined.pdf" : "evf_si_std_edge_combined.pdf"
+        draw(PDF(joinpath(plot_path, name), 6inch, 4inch), plt)
+    end
+
+    print("  0%")
+    max_dist_from_edge = 5
+    plot_std(:DistFromEdge, max_dist_from_edge,
+        "Distance from edge (body length)")
+    print("\r 50%")
+    max_dist_from_back = 1
+    plot_std(:DistFromBack, max_dist_from_back,
+        "Normalized distance from back to front")
+    println("\r100%")
+end
+
+
 @step [get_pos, get_personal_info, get_social_info] function plot_info_illustration(p::Project)
     pos, mask = p.step[get_pos]
     pi = p.step[get_personal_info]
