@@ -417,11 +417,18 @@ end
 end
 
 
+function plot_example_school(p::Vector{Project})
+    for i in eachindex(p)
+        plot_example_school(p[i])
+    end
+end
+
+
 @step [get_pos] function plot_example_school(p::Project)
     pos, mask = p.step[get_pos]
     k = 1
     q = pos[mask[:,k],k];
-    draw(PDF(joinpath(plot_path, "example.pdf"), 6inch, 6inch), simpleplot(q))
+    draw(PDF(joinpath(plot_path, "example_$(p.uid).pdf"), 6inch, 6inch), simpleplot(q))
 end
 
 

@@ -34,6 +34,9 @@ dot(u::Vec2, v::Vec2) = u.x * v.x + u.y * v.y
 cross(u::Vec2, v::Vec2) = u.x * v.y - u.y * v.x
 mod(u::Vec2, m) = Vec2(mod(u.x, m), mod(u.y, m))
 
+rotate(u::Vec2, θ::Real) = Vec2(u.x * cos(θ) - u.y * sin(θ), u.x * sin(θ) + u.y * cos(θ))
+
+
 import Base: mean
 function mean(p::Vector{State})
     n = length(p)
@@ -86,6 +89,7 @@ type Project
     step::Dict{Function, Any}
     deps::Dict{Function, Set{Function}}
     Project(uid; config...) = new(uid, Dict{Symbol, Any}(config), Dict(), Dict())
+    Project(p::Project, uid; config...) = new(uid, merge(p.conf, Dict{Symbol, Any}(config)), Dict(), Dict())
 end
 
 """Reset a step in a `Project` as well as all steps downstream."""
@@ -196,6 +200,9 @@ include("detections.jl")
 # Strip detections based on visual zones (binocular, blind…)
 include("zones.jl")
 
+# Test cut transversal connections
+include("cut.jl")
+
 # Analyze structure of visual interaction networks.
 include("structure.jl")
 
@@ -207,6 +214,9 @@ include("rescaling.jl")
 
 # Analyze effect of turbidity on schooling behavior.
 include("turbidity.jl")
+
+# Analyze effect of predator cooperation on risk.
+include("predator.jl")
 
 
 nothing

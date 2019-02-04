@@ -8,6 +8,68 @@ end
 #     load_detections(p.step[get_detect_file])
 # end
 
+function horizontal_colormap()
+    h = compose(context(units=UnitBox(0, 0, 256, 1)),
+        rectangle(0:255, [0], [1], [1]), fill(plasma_data))
+    draw(PNG("colormap_horizontal.png", 256px, 16px), h)
+end
+
+# Plots from handpicked_hd_project
+@step [get_pos, get_grid, get_detect_file] function plot_detect_state(p::Project)
+    print("  0%")
+    pos, mask = p.step[get_pos]
+    grid = p.step[get_grid]
+    ny, nx = size(grid)
+    detections = load_detections(p.step[get_detect_file])
+    strip_blind_detections!(detections, pos, mask, grid)
+
+    function makeplot(k, tag)
+        h = imagedetect(pos[mask[:,k],k], detections[:,:,k], grid, max=80)
+        draw(PNG(joinpath(plot_path, "detect_state_blind_$tag.png"), nx*px, ny*px), h)
+    end
+
+    print("\r 20%")
+    makeplot(1, "polarized")
+
+    print("\r 40%")
+    makeplot(2, "milling_open")
+
+    print("\r 60%")
+    makeplot(3, "milling")
+
+    print("\r 80%")
+    makeplot(4, "swarming")
+
+    println("\r100%")
+end
+
+
+# Plots from handpicked_hd_project
+@step [get_pos, get_grid, get_detect_file] function plot_detect_polarized(p::Project)
+    print("  0%")
+    pos, mask = p.step[get_pos]
+    grid = p.step[get_grid]
+    ny, nx = size(grid)
+    k = 1 # 2988
+
+    print("\r 10%")
+    detections = load_detections(p.step[get_detect_file])
+
+    print("\r 20%")
+    h = plotdetect(pos[mask[:,k],k], detections[:,:,k], grid, minvalue=0, maxvalue=80)
+    draw(PDF(joinpath(plot_path, "detect_state_polarized_full.pdf"), 4inch, 3inch), h)
+
+    print("\r 50%")
+    strip_blind_detections!(detections, pos, mask, grid)
+
+    print("\r 70%")
+    h = plotdetect(pos[mask[:,k],k], detections[:,:,k], grid, minvalue=0, maxvalue=80)
+    draw(PDF(joinpath(plot_path, "detect_state_polarized_blind.pdf"), 4inch, 3inch), h)
+
+    println("\r100%")
+end
+
+
 @step [get_pos, get_grid] function run_dist_from_edge_grid(p::Project)
     pos, mask = p.step[get_pos]
     α = p.conf[:α]
@@ -69,7 +131,6 @@ end
                    abs(gymin + ymin), abs(gymax - ymax))
 
         # order parameters and state, relative direction
-        dir = NaN
         op, or = order_parameters(pos[nz,k])
         if op > 0.65 && or < 0.35
             state = "Polarized"
@@ -80,6 +141,10 @@ end
             state = "Swarming"
         else
             state = "Transitioning"
+        end
+
+        if state != "Polarized"
+            dir = relative_dir([State(Vec2(0,0), Vec2(1,0))], grid)[mz]
         end
 
         # append to dataframe
@@ -110,6 +175,9 @@ end
     base_theme = p.conf[:theme]
 
     # Limit to polarized
+    if all(df[:State].!="Polarized")
+        return
+    end
     df = df[df[:State].=="Polarized",:]
 
     # Limit to common disk
@@ -143,13 +211,83 @@ end
     h = plot(dfd, x=:RelativeDir, y=:Detections, color=:Density, Geom.rectbin,
         Coord.cartesian(xmin=-180, xmax=180),
         Scale.x_continuous(labels=x->@sprintf("%d°", x)),
-        Scale.color_continuous(colormap=cmap),
+        Scale.color_continuous(colormap=cmap, minvalue=0.0, maxvalue=0.2),
         Guide.xticks(ticks=collect(-180:30:180)),
         Guide.xlabel("Relative angular position"),
         Guide.ylabel("Detection count"),
         Theme(; base_theme...))
 
-    draw(PDF(joinpath(plot_path, "detections_angle.pdf"), 6inch, 4inch), h)
+    draw(PDF(joinpath(plot_path, "detections_angle_$(p.uid).pdf"), 6inch, 4inch), h)
+    println("\r100%")
+end
+
+
+function plot_detect_merged(p::Vector{Project})
+    @assert length(p) > 0
+    cmap = eval(p[1].conf[:colormap])
+    base_theme = p[1].conf[:theme]
+    dfm = []
+    translate = Dict{AbstractString,AbstractString}(
+        "random_pos_density" => "PD",
+        "random_pos" => "P",
+        "control" => "C",
+    )
+    for i in eachindex(p)
+        run_detect(p[i]) # in case it hadn't run
+        df = copy(p[i].step[run_detect])
+
+        # Limit to polarized
+        df = df[df[:State].=="Polarized",:]
+
+        # Limit to common disk
+        rmax = minimum(df[:MaxRadius])
+        df = df[df[:DistFromEdge] .<= rmax,:]
+
+        df[:Dataset] = translate[p[i].uid]
+        if i == 1
+            dfm = df
+        else
+            append!(dfm, df)
+        end
+    end
+
+    print(" 10%")
+
+    # Covert relative dir to degrees
+    dfm[:RelativeDir] = rad2deg(mod(dfm[:RelativeDir] + 3pi, 2pi) - pi)
+
+    function bin_col(col, edges)
+        for row in eachrow(dfm)
+            for j in 2:length(edges)
+                if row[col] < edges[j]
+                    row[col] = (edges[j-1] + edges[j]) / 2
+                    break
+                end
+            end
+        end
+        dfm[dfm[col] .< last(edges),:]
+    end
+
+    dfm = bin_col(:RelativeDir, -180:5:180)
+
+    print("\r 40%")
+
+    edges = 0:2:80
+    dfd = by(dfm, [:RelativeDir, :Dataset]) do d
+        DataFrame(Mean=mean(d[:Detections]),Median=median(d[:Detections]))
+    end
+
+    print("\r 50%")
+
+    h = plot(dfd, x=:RelativeDir, y=:Mean, color=:Dataset, Geom.line,
+        Coord.cartesian(xmin=-180, xmax=180),
+        Scale.x_continuous(labels=x->@sprintf("%d°", x)),
+        Guide.xticks(ticks=collect(-180:30:180)),
+        Guide.xlabel("Relative angular position"),
+        Guide.ylabel("Detection count"),
+        Theme(; base_theme...))
+
+    draw(PDF(joinpath(plot_path, "detections_angle_merged.pdf"), 6inch, 4inch), h)
     println("\r100%")
 end
 
@@ -162,6 +300,9 @@ end
     base_theme = p.conf[:theme]
 
     # Limit to polarized
+    if all(df[:State].!="Polarized")
+        return
+    end
     df = df[df[:State].=="Polarized",:]
 
     # Limit to common disk
@@ -199,14 +340,14 @@ end
         Geom.rectbin,
         Coord.cartesian(xmin=ex[1], xmax=ex[end], ymin=ey[1], ymax=ey[end]),
         Scale.y_continuous(labels=x->@sprintf("%d°", x)),
-        Scale.color_continuous(colormap=cmap, maxvalue=50),
+        Scale.color_continuous(colormap=cmap, maxvalue=40),
         Guide.yticks(ticks=collect(-180:30:180)),
         Guide.xlabel("Distance from edge (body length)"),
         Guide.ylabel("Relative angular position"),
         Guide.colorkey("Average\ndetection\ncount"),
         Theme(; base_theme...))
 
-    draw(PDF(joinpath(plot_path, "detections_dist_angle.pdf"), 6inch, 4inch), h)
+    draw(PDF(joinpath(plot_path, "detections_dist_angle_$(p.uid).pdf"), 6inch, 4inch), h)
 
     println("\r100%")
 end
@@ -245,15 +386,127 @@ end
     h = plot(layer(dfm, x=:DistFromEdge, ymin=:Min, ymax=:Max, color=:State, Geom.errorbar),
         layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.line, order=1),
         layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.point, order=2),
-        Coord.cartesian(xmin=0, xmax=30, ymin=15, ymax=35),
+        Coord.cartesian(xmin=0, xmax=30, ymin=10, ymax=30),
         Guide.xlabel("Distance from edge (body length)"),
         Guide.ylabel("Number of detections"),
         Theme(; base_theme...))
 
-    name = joinpath(plot_path, "detect_radius.pdf")
+    name = joinpath(plot_path, "detect_radius_$(p.uid).pdf")
     draw(PDF(name, 6inch, 4inch), h)
 
     println("\r100%")
+end
+
+
+@step [run_detect, run_sequence] function plot_detect_timescale(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_detect])
+    seqID =
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Add sequence ID
+    seqID = p.step[run_sequence]
+    df[:SeqID] = map(i -> seqID[i], df[:SwarmID])
+
+    print("\r 10%")
+
+    # Add time (frames / 30fps -> seconds)
+    df[:Time] = map((k, p) -> (k - findfirst(seqID, p)) / 30, df[:SwarmID], df[:SeqID])
+
+    print("\r 20%")
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+
+    # Covert relative dir to degrees
+    df[:RelativeDir] = rad2deg(mod(df[:RelativeDir] + 3pi, 2pi) - pi)
+
+    print("\r 30%")
+
+    function bin_col(col, edges)
+        for row in eachrow(df)
+            for j in 2:length(edges)
+                if row[col] < edges[j]
+                    row[col] = (edges[j-1] + edges[j]) / 2
+                    break
+                end
+            end
+        end
+        df[df[col] .< last(edges),:]
+    end
+
+    df = bin_col(:RelativeDir, -180:5:180)
+    print("\r 40%")
+
+    dfd = by(df, [:RelativeDir, :Time, :SeqID, :State]) do d
+        iqd = percentile(d[:Detections], 75) - percentile(d[:Detections], 25)
+        DataFrame(
+            MeanDetections=mean(d[:Detections]),
+            MedianDetections=median(d[:Detections]),
+            InterquartileDetections=iqd,
+        )
+    end
+
+    print("\r 50%")
+
+    dfe = by(dfd, [:SeqID, :State]) do d
+        d1 = DataFrame([Float64, Float64], [:Time, :Stdev], 0)
+        time = d[:Time]
+        for t in unique(time)
+            s = std(d[time .<= t, :InterquartileDetections])
+            append!(d1, DataFrame(Time=t, Stdev=s))
+        end
+        d1
+    end
+
+    dfg = by(dfe, [:Time, :State]) do d
+        m, s = mean(d[:Stdev]), sem(d[:Stdev])
+        DataFrame(Stdev=m, Min=m-s, Max=m+s)
+    end
+
+    print("\r 60%")
+
+    h = plot(dfg[(dfg[:Time] .<= 1.6) & (dfg[:State] .!= "Transitioning"),:],
+        layer(x=:Time, ymin=:Min, ymax=:Max, color=:State, Geom.errorbar, order=0),
+        layer(x=:Time, y=:Stdev, color=:State, Geom.line, order=1),
+        # Coord.cartesian(xmin=0, xmax=1.6, ymin=3, ymax=8),
+        Coord.cartesian(xmin=0, xmax=1.6, ymin=1, ymax=3),
+        Guide.xlabel("Time (s)"),
+        Guide.ylabel("Stdev of detection count by angle"),
+        Theme(; base_theme...))
+
+    draw(PDF(joinpath(plot_path, "detections_timescale.pdf"), 6inch, 4inch), h)
+    println("\r100%")
+end
+
+
+@step [run_detect] function run_sequence(p::Project)
+    # df = unique(p.step[run_detect], [:SwarmID])
+    # dp = diff(df[:Polarization])
+    # dr = diff(df[:Rotation])
+    # r1, r2, r3 = 100, 100, 80
+    # idx = Int[1]
+    # for i in 3:(length(dp) - 2)
+    #     dp2, dp1 = abs(dp[i]), abs(mean(dp[i+[-2,-1,1,2]]))
+    #     dr2, dr1 = abs(dr[i]), abs(mean(dr[i+[-2,-1,1,2]]))
+    #     if dp2 > r1 * dp1 || dr2 > r2 * dr1 || (dp2 > r3 * dp1 && dr2 > r3 * dr1)
+    #         push!(idx, i)
+    #     end
+    # end
+    # idx
+    start = [30, 59, 88, 124, 163, 205, 233, 276, 325, 359, 396, 432, 461, 493, 538, 572, 606, 640, 674, 708, 736, 770, 804, 839, 873, 907, 963, 997, 1031, 1065, 1099, 1134, 1188, 1222, 1266, 1329, 1363, 1419, 1453, 1487, 1540, 1594, 1633, 1672, 1711, 1765, 1804, 1843, 1879, 1918, 1957, 1996, 2035, 2074, 2113, 2152, 2191, 2230, 2269, 2308, 2347, 2386, 2425, 2464, 2504, 2576, 2635, 2712, 2771, 2855, 2906, 2945, 2989, 3018, 3072, 3080, 3106, 3137, 3181, 3215, 3249, 3293, 3320, 3352, 3406, 3480, 3524, 3588, 3632, 3686, 3730, 3773, 3827, 3887, 3951, 3995, 4038, 4084, 4108, 4152, 4186, 4250, 4279, 4313, 4348, 4382, 4426, 4470, 4514, 4588, 4692, 4701, 4736, 4780, 4854, 4888, 4952, 4991, 5035, 5112, 5156, 5210, 5254, 5291, 5349, 5418, 5472, 5536, 5577, 5622, 5666, 5710, 5754, 5798, 5852, 5901, 5958, 6012, 6056, 6130, 6192, 6246, 6300, Inf]
+    idx = zeros(Int, nrow(p.step[run_detect]))
+    n = 1
+    for i in eachindex(idx)
+       if i >= start[n]
+           n += 1
+       end
+       idx[i] = n
+    end
+    idx
 end
 
 
@@ -442,7 +695,7 @@ end
 
 
 function plotdetect(p::Vector{State}, detect::Matrix, grid::Matrix{Vec2};
-                    minvalue=nothing, maxvalue=nothing, title=nothing)
+                    colormap=plasma, minvalue=nothing, maxvalue=nothing, title=nothing)
     nx, ny = size(detect)
     x = [z.x for z in grid[:]]
     y = [z.y for z in grid[:]]
@@ -459,22 +712,23 @@ function plotdetect(p::Vector{State}, detect::Matrix, grid::Matrix{Vec2};
         Guide.xlabel("x (body length)"),
         Guide.ylabel("y (body length)"),
         Guide.title(title),
-        Scale.color_continuous(minvalue=minvalue, maxvalue=maxvalue, colormap=x -> RGB(x, x, 0.5 - x/2)),
+        Scale.color_continuous(minvalue=minvalue, maxvalue=maxvalue, colormap=colormap),
         Coord.cartesian(raster=true, xmin=-50, xmax=50, ymin=-50, ymax=50, aspect_ratio=1))
 end
 
-function imagedetect(p::Vector{State}, detections::Matrix, grid::Matrix{Vec2})
+function imagedetect(p::Vector{State}, detections::Matrix, grid::Matrix{Vec2}; colormap=plasma, max=nothing)
     nx, ny = size(grid)
-    xmin, xmax = extrema([z.x for z in grid[:]])
-    ymin, ymax = extrema([z.y for z in grid[:]])
+    xmin, xmax = grid[1].x, grid[end].x
+    ymin, ymax = grid[1].y, grid[end].y
+    dx, dy = (xmax - xmin) / nx, (ymax - ymin) / ny
     box = UnitBox(xmin, ymax, xmax - xmin, ymin - ymax)
     c = context(units=box)
     detect = map(countnz, detections)
-    m = maximum(detect)
-    x, y = linspace(-50, 50, nx), linspace(-50, 50, ny)
-    dx, dy = 100/nx, 100/ny
+    if max == nothing
+        max = maximum(detect)
+    end
     for j in 1:ny, i in 1:nx
-        c = compose(c, (context(), rectangle(grid[i,j].x-dx/2, grid[i,j].y-dy/2, 1.25dx, 1.25dy), fill(RGB(detect[i,j]/m, detect[i,j]/m, 0.5 - detect[i,j]/2m)), stroke(nothing)))
+        c = compose(c, (context(), rectangle(grid[i,j].x-dx/2, grid[i,j].y-dy/2, 1.25dx, 1.25dy), fill(colormap(detect[i,j]/max)), stroke(nothing)))
     end
     cp = context(units=box)
     for i in eachindex(p)

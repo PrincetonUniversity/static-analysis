@@ -26,13 +26,81 @@ end
 @step function run_rescaling_spread(p::Project)
     rps = rescaled_sub_projects()
     for rp in rps
-        println(format("\n# Scale {:.2f}", rp.conf[:scale]))
+        println(format("\n# Scale {:.2f} - Sensitivity {:.1f}", rp.conf[:scale], rp.conf[:sensitivity]))
         run_spread(rp)
         rp.step[run_spread][:Scale] = rp.conf[:scale]
+        rp.step[run_spread][:Sensitivity] = rp.conf[:sensitivity]
     end
     vcat(DataFrame[rp.step[run_spread] for rp in rps])
 end
 
+@step function run_rescaling_spread_summary(p::Project)
+    rps = rescaled_sub_projects()
+    for rp in rps
+        println(format("\n# Scale {:.2f} - Sensitivity {:.1f}", rp.conf[:scale], rp.conf[:sensitivity]))
+        run_spread_summary(rp)
+    end
+    vcat(DataFrame[rp.step[run_spread_summary] for rp in rps])
+end
+
+function load_run_spread(p::Project)
+    dir = joinpath(data_path, "Projects", p.uid)
+    file = joinpath(dir, "run_spread.jld")
+    JLD.load(file, "data")
+end
+
+# TODO: save only summary (not 500MB!)
+@step function run_spread_summary(p::Project)
+    print("  0%")
+    df = load_run_spread(p)
+    print("\r 10%")
+
+    # # Convert relative dir to degrees
+    # df[:RelativeDir] = rad2deg(mod(df[:RelativeDir] + 3pi, 2pi) - pi)
+    #
+    # print("\r 20%")
+    #
+    # df[:Detections] = convert(DataVector{Float64}, df[:Detections])
+    #
+    # print("\r 30%")
+    #
+    # ey = -180:15:180
+    # for i in 1:size(df, 1)
+    #     for j in 2:length(ey)
+    #         if df[i,:RelativeDir] < ey[j]
+    #             df[i,:RelativeDir] = (ey[j-1] + ey[j]) / 2
+    #             break
+    #         end
+    #     end
+    # end
+
+    print("\r 50%")
+
+    # dfm = by(df, :RelativeDir) do d
+    #     rho = d[:ExpectedCascadeSize]
+        rho = df[:ExpectedCascadeSize]
+        m1, s1 = mean(rho[!isnan(rho)]), sem(rho[!isnan(rho)])
+        rho -= (df[:Detections])
+        m2, s2 = mean(rho[!isnan(rho)]), sem(rho[!isnan(rho)])
+        rho ./= (df[:Detections])
+        m3, s3 = mean(rho[!isnan(rho)]), sem(rho[!isnan(rho)])
+        dfm = DataFrame(
+            # State=d[:State],
+            # MaxRadius=d[:MaxRadius],
+            # DistFromEdge=d[:DistFromEdge],
+            Scale=p.conf[:scale],
+            Sensitivity=p.conf[:sensitivity],
+            ExpectedCascadeSize=m1,
+            SEMCascadeSize=s1,
+            ExpectedSpread=m2,
+            SEMSpread=s2,
+            ExpectedRelativeSpread=m3,
+            SEMRelativeSpread=s3,
+        )
+    # end
+    println("\r100%")
+    dfm
+end
 
 @step [run_rescaling_info] function plot_rescaling_info(p::Project)
     print("  0%")
@@ -314,6 +382,110 @@ end
     plot_col(d->(d[:ExpectedCascadeSize] - d[:Detections]) ./ d[:Detections],
         "rel_spread", 0, 1.5,
         "Expected relative spread")
+    println("\r100%")
+end
+
+
+@step [run_rescaling_spread_summary] function plot_rescaling_spread_summary(p::Project)
+    print("  0%")
+
+    df = p.step[run_rescaling_spread_summary]
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    print("\r 10%")
+
+    h = plot(df, x=:Sensitivity, y=:Scale, color=:ExpectedCascadeSize,
+        Geom.rectbin,
+        Coord.cartesian(xmin=-1, xmax=1, ymin=-1, ymax=1),
+        Scale.y_log2,
+        Scale.color_continuous(colormap=cmap),
+        Guide.xlabel("Sensitivity"),
+        Guide.ylabel("Scaling factor"),
+        Guide.colorkey("Expected\nCascade\nSize"),
+        Theme(; base_theme...))
+    name = string("rescaling_sensitivity_cascade_size.pdf")
+    draw(PDF(joinpath(plot_path, name), 6inch, 6inch/φ), h)
+
+    print("\r 40%")
+
+    h = plot(df, x=:Sensitivity, y=:Scale, color=:ExpectedSpread,
+        Geom.rectbin,
+        Coord.cartesian(xmin=-1, xmax=1, ymin=-1, ymax=1),
+        Scale.y_log2,
+        Scale.color_continuous(colormap=cmap),
+        Guide.xlabel("Sensitivity"),
+        Guide.ylabel("Scaling factor"),
+        Guide.colorkey("Expected\nSpread"),
+        Theme(; base_theme...))
+    name = string("rescaling_sensitivity_spread.pdf")
+    draw(PDF(joinpath(plot_path, name), 6inch, 6inch/φ), h)
+
+    print("\r 70%")
+
+    h = plot(df, x=:Sensitivity, y=:Scale, color=:ExpectedRelativeSpread,
+        Geom.rectbin,
+        Coord.cartesian(xmin=-1, xmax=1, ymin=-1, ymax=1),
+        Scale.y_log2,
+        Scale.color_continuous(colormap=cmap),
+        Guide.xlabel("Sensitivity"),
+        Guide.ylabel("Scaling factor"),
+        Guide.colorkey("Expected\nRelative\nSpread"),
+        Theme(; base_theme...))
+    name = string("rescaling_sensitivity_relative_spread.pdf")
+    draw(PDF(joinpath(plot_path, name), 6inch, 6inch/φ), h)
+
+    println("\r100%")
+end
+
+
+
+@step [run_rescaling_spread] function plot_rescaling_spread_sensitivity(p::Project)
+    print("  0%")
+
+    df = p.step[run_rescaling_spread]
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to polarized
+    df = df[df[:State].=="Polarized",:]
+
+    print("\r  5%")
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+
+    print("\r 10%")
+
+    # df[:Detections] = convert(DataVector{Float64}, df[:Detections])
+
+    # Round scaling factors
+    for scale in [1/2,1/√2,1,√2,2]
+        df[df[:Scale].==scale,:Scale] = round(scale, 2)
+    end
+    print("\r 30%")
+
+    dfm = by(df, [:Scale, :Sensitivity]) do d
+        rho = d[:ExpectedCascadeSize]
+        DataFrame(Mean=mean(rho[!isnan(rho)]))
+    end
+
+    print("\r 50%")
+
+    h = plot(dfm, x=:Sensitivity, y=:Scale, color=:Mean,
+        Geom.rectbin,
+        Coord.cartesian(xmin=0, xmax=1, ymin=-1, ymax=1),
+        Scale.y_log2,
+        Guide.xlabel("Sensitivity"),
+        Guide.ylabel("Scaling factor"),
+        Theme(; base_theme...))
+
+    print("\r 90%")
+
+    name = string("rescaling_sensitivity_cascade_size.pdf")
+    draw(PDF(joinpath(plot_path, name), 6inch, 6inch/φ), h)
+
     println("\r100%")
 end
 

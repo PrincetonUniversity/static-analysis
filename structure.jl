@@ -88,6 +88,12 @@ function graph(adj::BitMatrix)
 end
 
 
+function plot_structure(p::Vector{Project})
+    for i in eachindex(p)
+        plot_structure(p[i])
+    end
+end
+
 @step [run_structure] function plot_structure(p::Project)
     print("  0%")
 
@@ -105,11 +111,12 @@ end
     # Filter components with a well-defined orientation
     wdo = df[:ComponentAspectRatio] .< 1/√2
 
-    function plot_col(df, col, edges, tag, ticks, scale, ylabel)
+    function plot_col(df, col, edges, tag, colors, ticks, scale, ylabel)
         dfb = by(df, :WeakestLink) do d
             _, bin = hist(d[col], edges)
             DataFrame(Col=(edges[2:end]+edges[1:end-1])/2, Density=bin ./ sum(bin))
         end
+        size(dfb, 1) > 0 || return
         dfm = by(df, :WeakestLink) do d
             if col == :ComponentAngle
                 DataFrame(
@@ -133,31 +140,128 @@ end
             Coord.cartesian(xmin=-2.5, xmax=-0.5, ymin=edges[1], ymax=edges[end]),
             scale,
             Scale.x_log10,
-            Scale.color_continuous(colormap=cmap),
+            Scale.color_continuous(colormap=cmap, minvalue=colors[1], maxvalue=colors[2]),
             ticks,
             Guide.xlabel("Weakest link threshold"),
             Guide.ylabel(ylabel),
             Theme(; base_theme...))
 
-        name = string(tag, ".pdf")
+        name = string(tag, "_", p.uid, ".pdf")
         draw(PDF(joinpath(plot_path, name), 6inch, 4inch), h)
     end
 
     print("\r 10%")
 
     plot_col(df[!nba,:], :ComponentSize, 0:5:160, "component_size",
+        (0.0, 1.0),
         Scale.y_continuous,
         Guide.yticks,
         "Component size")
     print("\r 30%")
 
     plot_col(df[!nba & wdo,:], :ComponentAngle, -90:5:90, "component_angle",
+        (0.0, 0.25),
         Scale.y_continuous(labels=x->@sprintf("%d°", x)),
         Guide.yticks,
         "Component relative orientation")
     print("\r 50%")
 
     plot_col(df[nba,:], :NeighborAngle, -180:10:180, "neighbor_angle",
+        (0.0, 0.05),
+        Scale.y_continuous(labels=x->@sprintf("%d°", x)),
+        Guide.yticks(ticks=collect(-180:30:180)),
+        "Relative angle of neighbors")
+    print("\r100%")
+end
+
+function plot_structure_merged(p::Vector{Project})
+    @assert length(p) > 0
+    cmap = eval(p[1].conf[:colormap])
+    base_theme = p[1].conf[:theme]
+    dfm = []
+    translate = Dict{AbstractString,AbstractString}(
+        "random_pos_density" => "PD",
+        "random_pos" => "P",
+        "control" => "C",
+    )
+    for i in eachindex(p)
+        run_structure(p[i]) # in case it hadn't run
+        df = copy(p[i].step[run_structure])
+        df[:Dataset] = translate[p[i].uid]
+        if i == 1
+            dfm = df
+        else
+            append!(dfm, df)
+        end
+    end
+
+    print(" 30%")
+
+    # Convert angles from rad to deg
+    dfm[:ComponentAngle] *= 180/pi
+    dfm[:NeighborAngle] *= 180/pi
+
+    # Filter neighbor angles
+    nba = !isnan(dfm[:NeighborAngle])
+
+    # Filter components with a well-defined orientation
+    wdo = dfm[:ComponentAspectRatio] .< 1/√2
+
+    function plot_col(df, col, edges, tag, colors, ticks, scale, ylabel)
+        dfq = by(df, [:WeakestLink, :Dataset]) do d
+            if col == :ComponentAngle
+                DataFrame(
+                    MedianPos=median(d[d[col].>0,col]),
+                    MedianNeg=median(d[d[col].<0,col]))
+            else
+                DataFrame(Median=median(d[col]))
+            end
+        end
+        size(dfq, 1) > 0 || return
+        layers = []
+        if col == :ComponentSize
+            layers = layer(dfq, x=:WeakestLink, y=:Median, color=:Dataset, Geom.line)
+        elseif col == :ComponentAngle
+            layers = layer(dfq, x=:WeakestLink, y=:MedianPos, color=:Dataset, Geom.line)
+            append!(layers, layer(dfq, x=:WeakestLink, y=:MedianNeg, color=:Dataset, Geom.line))
+        end
+        h = plot(
+            layers...,
+            Coord.cartesian(xmin=-2.5, xmax=-0.5, ymin=edges[1], ymax=edges[end]),
+            scale,
+            Scale.x_log10,
+            # Scale.color_continuous(colormap=cmap, minvalue=colors[1], maxvalue=colors[2]),
+            ticks,
+            Guide.xlabel("Weakest link threshold"),
+            Guide.ylabel(ylabel),
+            Theme(; base_theme...))
+
+        name = string(tag, "_merged.pdf")
+        try
+            draw(PDF(joinpath(plot_path, name), 6inch, 4inch), h)
+        catch
+            return dfq
+        end
+    end
+
+    print("\r 40%")
+
+    plot_col(dfm[!nba,:], :ComponentSize, 0:5:160, "component_size",
+        (0.0, 1.0),
+        Scale.y_continuous,
+        Guide.yticks,
+        "Component size")
+    print("\r 30%")
+
+    plot_col(dfm[!nba & wdo,:], :ComponentAngle, -90:5:90, "component_angle",
+        (0.0, 0.25),
+        Scale.y_continuous(labels=x->@sprintf("%d°", x)),
+        Guide.yticks,
+        "Component relative orientation")
+    print("\r 50%")
+
+    plot_col(dfm[nba,:], :NeighborAngle, -180:10:180, "neighbor_angle",
+        (0.0, 0.05),
         Scale.y_continuous(labels=x->@sprintf("%d°", x)),
         Guide.yticks(ticks=collect(-180:30:180)),
         "Relative angle of neighbors")

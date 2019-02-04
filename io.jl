@@ -102,48 +102,88 @@ function makeHandpickedDatasets()
     h5write_particles(joinpath(data_path, "handpickeddata.h5"), p[:,selection])
 end
 
-function makeUniformRandomDatasets(file::AbstractString; α::Real = -0.2)
+function makeRandomDatasets()
+    file = joinpath(data_path, "fullprocessed.h5")
+    makeRandomPosVelDensityDatasets(file, "random_pos_vel_density")
+    makeRandomPosVelDatasets(file, "random_pos_vel")
+    makeRandomPosDensityDatasets(file, "random_pos_density")
+    makeRandomPosDatasets(file, "random_pos")
+    makeRandomVelDatasets(file, "random_vel")
+    makeControlDatasets(file, "control")
+end
+
+function makeRandomPosVelDensityDatasets(file, tag)
+    makeUniformRandomDatasets(file, tag, σ=0)
+end
+
+function makeRandomPosVelDatasets(file, tag)
+    makeMitchellsBestCandidateRandomDatasets(file, tag, σ=0, num_candidates=3)
+end
+
+function makeRandomPosDensityDatasets(file, tag)
+    makeUniformRandomDatasets(file, tag)
+end
+
+function makeRandomPosDatasets(file, tag)
+    makeMitchellsBestCandidateRandomDatasets(file, tag, num_candidates=3)
+end
+
+function makeRandomVelDatasets(file, tag)
+    p, mask = h5read_particles(file)
+    K = size(p, 2) # replicates
+    for k in 1:K
+        @printf("\r%3d%%", 100(k-1) / K)
+        nz = find(mask[:,k])
+        for n in nz
+            p[n,k] = State(p[n,k].pos, rotate(Vec2(1, 0), 2π * rand()))
+        end
+    end
+
+    println("\r100%")
+    h5write_particles(joinpath(data_path, "fulldata_$tag.h5"), p)
+end
+
+function makeControlDatasets(file, tag)
+    nothing
+end
+
+
+function makeUniformRandomDatasets(file::AbstractString, tag::AbstractString;
+        α::Real = -0.2, σ::Real = deg2rad(10))
     p, mask = h5read_particles(file)
 
     N = size(p, 1) # max swarm size
     K = size(p, 2) # replicates
 
-    @inbounds for k in 1:K
+    for k in 1:K
         @printf("\r%3d%%", 100(k-1) / K)
         nz = find(mask[:,k])
 
-        # try to conserve polarization
-        m = mean(p[nz,k])
-        θ = angle(m.vel)
-        r = norm(m.vel)
-        #σ = acos(min(r, 1))
-        σ = pi/2 * acos(min(sqrt(r), 1))
         xmin, xmax, ymin, ymax = bounds(p[nz,k])
         dx, dy = xmax - xmin, ymax - ymin
 
-        # restict position to inside of largest α-shape
-        outer, _, _, _ = alphashape(α, p[nz,k])
-        poly = Vec2[p[nz[i],k].pos for i in outer[last(findmax(map(length, outer)))]]
+        # restrict position to inside of largest α-shape
+        poly = mainshape(alphashape(α, p[nz,k]), [q.pos for q in p[nz,k]])
         for n in nz
-            while true
+            pos = Vec2(xmin + dx * rand(), ymin + dy * rand())
+            while !inpolygon(pos, poly)
                 pos = Vec2(xmin + dx * rand(), ymin + dy * rand())
-                if inpolygon(pos, poly)
-                    ϕ = θ + σ * randn()
-                    vel = Vec2(cos(ϕ), sin(ϕ))
-                    p[n,k] = State(pos, vel)
-                    break
-                end
             end
+            if σ > 0
+                vel = rotate(nearest(p[nz,k], pos).vel, σ * randn())
+            else
+                vel = rotate(Vec2(1, 0), 2π * rand())
+            end
+            p[n,k] = State(pos, vel)
         end
-
     end
 
     println("\r100%")
-    h5write_particles(joinpath(data_path, "fulldata_random.h5"), p)
+    h5write_particles(joinpath(data_path, "fulldata_$tag.h5"), p)
 end
 
 
-function makeMitchellsBestCandidateRandomDatasets(file::AbstractString; α::Real = -0.2, num_candidates::Integer = 5, σ::Real = deg2rad(10))
+function makeMitchellsBestCandidateRandomDatasets(file::AbstractString, tag::AbstractString; α::Real = -0.2, num_candidates::Integer = 5, σ::Real = deg2rad(10))
     p, mask = h5read_particles(file)
 
     N = size(p, 1) # max swarm size
@@ -157,7 +197,7 @@ function makeMitchellsBestCandidateRandomDatasets(file::AbstractString; α::Real
     end
 
     println("\r100%")
-    h5write_particles(joinpath(data_path, "fulldata_random.h5"), p)
+    h5write_particles(joinpath(data_path, "fulldata_$tag.h5"), p)
 end
 
 
@@ -194,7 +234,12 @@ function mbcRandom(p::Vector{State};
                 best = pos
             end
         end
-        q[i] = State(best, nearest(p, best).vel + σ * randn())
+        if σ > 0
+            vel = rotate(nearest(p, best).vel, σ * randn())
+        else
+            vel = rotate(Vec2(1, 0), 2π * rand())
+        end
+        q[i] = State(best, vel)
     end
     q
 end
@@ -247,7 +292,7 @@ function bridsonRandom(p::Vector{State}; α::Real = -0.2, R::Real = 0.7)
         Vec2(cos(ϕ), sin(ϕ))
     end
 
-    # restict position to inside of largest α-shape
+    # restrict position to inside of largest α-shape
     poly = mainshape(alphashape(α, p), [q.pos for q in p])
 
     xmin, xmax, ymin, ymax = bounds(p)

@@ -6,6 +6,7 @@
     si = p.step[get_social_info]
     detections = load_detections(p.step[get_detect_file])
     grid = p.step[get_grid]
+    sensitivity = p.conf[:sensitivity]
 
     N = size(pos, 1) # max swarm size
     K = size(pos, 2) # replicates
@@ -59,7 +60,7 @@
         net = si[nz,nz,k]
 
         # compute cascade size
-        ex = expected_cascade_size(detections[:,:,k], net, nz)
+        ex = expected_cascade_size(detections[:,:,k], net, nz, sensitivity)
 
         # append to dataframe
         row = DataFrame(
@@ -89,6 +90,9 @@ end
     base_theme = p.conf[:theme]
 
     # Limit to polarized
+    if !any(df[:State].=="Polarized")
+       return
+    end
     df = df[df[:State].=="Polarized",:]
 
     # Limit to common disk
@@ -134,7 +138,99 @@ end
         Guide.ylabel("Expected relative spread"),
         Theme(; base_theme...))
 
-    draw(PDF(joinpath(plot_path, "rel_spread_angle_dist.pdf"), 6inch, 4inch), h)
+    draw(PDF(joinpath(plot_path, "rel_spread_angle_dist_$(p.uid).pdf"), 6inch, 4inch), h)
+
+    println("\r100%")
+end
+
+
+@step [run_spread] function plot_cascade_radius(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_spread])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+    print("\r 10%")
+
+    edges = 0:2:30
+    @inbounds for row in eachrow(df)
+        for j in 2:length(edges)
+            if row[:DistFromEdge] < edges[j]
+                row[:DistFromEdge] = (edges[j-1] + edges[j]) / 2
+                break
+            end
+        end
+    end
+    df = df[df[:DistFromEdge] .< last(edges),:]
+    print("\r 40%")
+
+    dfm = by(df, [:DistFromEdge, :State]) do d
+        rho = d[:ExpectedCascadeSize]
+        m, s = mean(rho), sem(rho)
+        DataFrame(Mean=m, Min=m-s, Max=m+s)
+    end
+
+    print("\r 60%")
+    h = plot(layer(dfm, x=:DistFromEdge, ymin=:Min, ymax=:Max, color=:State, Geom.errorbar),
+        layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.line, order=1),
+        layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.point, order=2),
+        Coord.cartesian(xmin=0, xmax=30, ymin=20, ymax=40),
+        Guide.xlabel("Distance from edge (body length)"),
+        Guide.ylabel("Expected cascade size"),
+        Theme(; base_theme...))
+
+    name = joinpath(plot_path, "cascade_radius_$(p.uid).pdf")
+    draw(PDF(name, 6inch, 4inch), h)
+
+    println("\r100%")
+end
+
+
+@step [run_spread] function plot_spread_radius(p::Project)
+    print("  0%")
+
+    df = copy(p.step[run_spread])
+    cmap = eval(p.conf[:colormap])
+    base_theme = p.conf[:theme]
+
+    # Limit to common disk
+    rmax = minimum(df[:MaxRadius])
+    df = df[df[:DistFromEdge] .<= rmax,:]
+    print("\r 10%")
+
+    edges = 0:2:30
+    @inbounds for row in eachrow(df)
+        for j in 2:length(edges)
+            if row[:DistFromEdge] < edges[j]
+                row[:DistFromEdge] = (edges[j-1] + edges[j]) / 2
+                break
+            end
+        end
+    end
+    df = df[df[:DistFromEdge] .< last(edges),:]
+    print("\r 40%")
+
+    dfm = by(df, [:DistFromEdge, :State]) do d
+        rho = (d[:ExpectedCascadeSize] - d[:Detections])
+        m, s = mean(rho), sem(rho)
+        DataFrame(Mean=m, Min=m-s, Max=m+s)
+    end
+
+    print("\r 60%")
+    h = plot(layer(dfm, x=:DistFromEdge, ymin=:Min, ymax=:Max, color=:State, Geom.errorbar),
+        layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.line, order=1),
+        layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.point, order=2),
+        Coord.cartesian(xmin=0, xmax=30, ymin=5, ymax=11),
+        Guide.xlabel("Distance from edge (body length)"),
+        Guide.ylabel("Spread of cascades"),
+        Theme(; base_theme...))
+
+    name = joinpath(plot_path, "spread_radius_$(p.uid).pdf")
+    draw(PDF(name, 6inch, 4inch), h)
 
     println("\r100%")
 end
@@ -165,8 +261,7 @@ end
     print("\r 40%")
 
     dfm = by(df, [:DistFromEdge, :State]) do d
-        # rho = (d[:ExpectedCascadeSize] - d[:Detections]) ./ d[:Detections]
-        rho = d[:ExpectedCascadeSize]
+        rho = (d[:ExpectedCascadeSize] - d[:Detections]) ./ d[:Detections]
         m, s = mean(rho), sem(rho)
         DataFrame(Mean=m, Min=m-s, Max=m+s)
     end
@@ -175,13 +270,62 @@ end
     h = plot(layer(dfm, x=:DistFromEdge, ymin=:Min, ymax=:Max, color=:State, Geom.errorbar),
         layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.line, order=1),
         layer(dfm, x=:DistFromEdge, y=:Mean, color=:State, Geom.point, order=2),
-        Coord.cartesian(xmin=0, xmax=30, ymin=20, ymax=40),
+        Coord.cartesian(xmin=0, xmax=30, ymin=0.25, ymax=0.5),
         Guide.xlabel("Distance from edge (body length)"),
-        # Guide.ylabel("Relative spread of cascades"),
-        Guide.ylabel("Expected cascade size"),
+        Guide.ylabel("Relative spread of cascades"),
         Theme(; base_theme...))
 
-    name = joinpath(plot_path, "cascade_radius.pdf")
+    name = joinpath(plot_path, "relative_spread_radius_$(p.uid).pdf")
+    draw(PDF(name, 6inch, 4inch), h)
+
+    println("\r100%")
+end
+
+
+function plot_avg_relative_spread_radius(p::Vector{Project})
+    print("  0%")
+
+    cmap = eval(p[1].conf[:colormap])
+    base_theme = p[1].conf[:theme]
+
+    dfm = DataFrame([Float64, Float64, Float64, Float64, Float64, ASCIIString], [:Q1, :Q2, :Q3, :Top, :Bottom, :Mode], 0)
+
+    mapping = Dict{AbstractString, AbstractString}(
+        "random_pos_vel_density" => "POD",
+        "random_pos_vel" => "PO",
+        "random_pos_density" => "PD",
+        "random_pos" => "P",
+        "random_vel" => "O",
+        "control" => "C",
+    )
+
+    for i in eachindex(p)
+        df = p[i].step[run_spread]
+        rho = (df[:ExpectedCascadeSize] - df[:Detections]) ./ df[:Detections]
+        if !all(isnan(rho))
+            rho = rho[!isnan(rho)]
+            Q1, Q2, Q3 = percentile(rho, 25), median(rho), percentile(rho, 75)
+            IQR = Q3 - Q1
+            sorted = sort(rho)
+            top = sorted[sorted.<=(Q3+1.5*IQR)][end]
+            bot = sorted[sorted.>=(Q1-1.5*IQR)][1]
+            # outliers = sorted[sorted.>(Q3+1.5*IQR)]
+            # append!(outliers, sorted[sorted.<(Q1-1.5*IQR)])
+            df = DataFrame(Q1=Q1, Q2=Q2, Q3=Q3, Top=top, Bottom=bot, Mode=mapping[p[i].uid])
+            append!(dfm, df)
+        end
+    end
+
+    print("\r 60%")
+    h = plot(dfm, x=:Mode, middle=:Q2, lower_hinge=:Q1, upper_hinge=:Q3,
+        lower_fence=:Bottom, upper_fence=:Top,
+        Geom.boxplot, Stat.identity,
+        Coord.cartesian(ymin=0, ymax=0.9),
+        Guide.xlabel("Random mode"),
+        Guide.ylabel("Avg. rel. spread of cascades"),
+        Theme(; base_theme...))
+
+    name = joinpath(plot_path, "avg_relative_spread_radius.pdf")
     draw(PDF(name, 6inch, 4inch), h)
 
     println("\r100%")
@@ -243,7 +387,7 @@ function run_cascade_one()
 end
 
 
-function expected_cascade_size(detect::Matrix{BitVector}, net::Matrix{Float64}, mask::BitVector)
+function expected_cascade_size(detect::Matrix{BitVector}, net::Matrix{Float64}, mask::BitVector, sensitivity)
     I, J, V = findnz(net)
     order = sortperm(V, rev=true)
     edges = zip(I[order], J[order])
@@ -258,28 +402,34 @@ function expected_cascade_size(detect::Matrix{BitVector}, net::Matrix{Float64}, 
     # @inbounds for i in eachindex(ex)
     @inbounds @sync @parallel for i in eachindex(ex)
         r0 = detect[i][1:n] & mask
-        ex[i] = expected_cascade_size_brute_force(r0, r1, r2, net, edges, visited)
+        ex[i] = expected_cascade_size_brute_force(r0, r1, r2, net, edges, visited, sensitivity)
     end
     fetch(ex)
 end
 
 function expected_cascade_size_brute_force(r0::BitVector, r1::BitVector, r2::BitVector,
                                            net::Matrix{Float64},
-                                           edges, visited)
+                                           edges, visited, sensitivity)
     N = 5
     n = 0.0
 
     @inbounds for k in 1:N
         copy!(r1, r0)
-        n += expected_cascade_size_brute_force(r1, r2, net, edges, visited)
+        n += expected_cascade_size_brute_force(r1, r2, net, edges, visited, sensitivity)
     end
     n / N
 end
 
+function tweak_probability(p, sensitivity)
+    q = log(p / (1 - p)) + sensitivity
+    exp(q) / (1 + exp(q))
+end
+
 function expected_cascade_size_brute_force(r0::BitVector, r1::BitVector,
                                            net::Matrix{Float64},
-                                           edges, visited)
+                                           edges, visited, sensitivity)
     fill!(visited, false)
+    # r0 &= rand(length(r0)) .< sensitivity
     expanding = true
     @inbounds while expanding
         expanding = false
@@ -288,8 +438,10 @@ function expected_cascade_size_brute_force(r0::BitVector, r1::BitVector,
             if !visited[i,j] && !r0[i] && r0[j]
                 visited[i,j] = true
                 expanding = true
-                if rand() < net[i,j]
-                    r1[i] = true
+                # if rand() < net[i,j] # original
+                if rand() < tweak_probability(net[i,j], sensitivity) # better
+                    r1[i] = true # original
+                    # r1[i] = rand() < sensitivity # stupid because too low
                 end
             end
         end
